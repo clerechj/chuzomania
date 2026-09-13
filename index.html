@@ -515,6 +515,19 @@
   .quick-item .qi-name .qi-time{display:block; font-weight:400; font-size:11px; color:var(--ink-soft); margin-top:1px;}
   .quick-item .qi-price{font-size:14px; color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600;}
   .quick-item .del-btn{font-size:16px;}
+  .quick-item.qi-selectable{cursor:pointer;}
+  /* pointer-events:none: el clic en cualquier parte de la fila (manejado en JS) es lo que marca
+     o desmarca — así el checkbox no "pelea" con ese clic y se desmarca por accidente al tocarlo. */
+  .quick-item .qi-check{width:18px; height:18px; flex-shrink:0; accent-color:var(--c-ventas); pointer-events:none;}
+
+  .ventas-historial-actions{display:flex; gap:8px;}
+  .ventas-share-bar{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    background:rgba(226,72,27,.1); border-radius:10px; padding:10px 12px; margin-bottom:10px;
+  }
+  .ventas-share-bar .vsb-info{display:flex; flex-direction:column; font-size:12px; color:var(--ember-dark);}
+  .ventas-share-bar .vsb-info b{font-size:16px; color:var(--c-ventas); font-variant-numeric:tabular-nums;}
+  .ventas-share-bar .vsb-actions{display:flex; gap:6px; flex-wrap:wrap;}
 
   /* ---- Login / roles ---- */
   .login-screen{
@@ -817,7 +830,21 @@
         <div id="ventaClientesResumen"></div>
         <div class="quick-list-head">
           <p class="section-sub" id="ventasHistorialLabel" style="margin:0;">Ventas registradas</p>
-          <button class="btn ghost small" id="ventaClearDayBtn" type="button">🧹 Limpiar</button>
+          <div class="ventas-historial-actions">
+            <button class="btn ghost small" id="ventaSelectModeBtn" type="button">☑ Seleccionar</button>
+            <button class="btn ghost small" id="ventaClearDayBtn" type="button">🧹 Limpiar</button>
+          </div>
+        </div>
+        <div class="ventas-share-bar" id="ventaShareBar" style="display:none;">
+          <div class="vsb-info">
+            <span id="ventaShareCount">0 seleccionadas</span>
+            <b id="ventaShareTotal">$0</b>
+          </div>
+          <div class="vsb-actions">
+            <button class="btn ghost small" id="ventaShareMarkAllBtn" type="button">Marcar todas</button>
+            <button class="btn ghost small" id="ventaShareUnmarkAllBtn" type="button">Desmarcar todas</button>
+            <button class="btn small" id="ventaShareImageBtn" type="button" title="Genera una imagen con las ventas marcadas para compartirla (por ejemplo por WhatsApp)">📤 Compartir imagen</button>
+          </div>
         </div>
         <div class="quick-list" id="ventaQuickList"></div>
       </div>
@@ -1378,6 +1405,14 @@ let draftOrder = []; // pedido actual en construcción (aún sin confirmar): [{r
 // Si no es null, el pedido actual no es una venta nueva sino la corrección de una venta ya
 // registrada con este id: al confirmar, esa venta original se reemplaza en vez de sumarse aparte.
 let editingVentaId = null;
+// Selección de ventas en "Ventas registradas", para armar una imagen y compartirla (p. ej. con
+// una socia) — independiente del pedido/edición en curso.
+let ventaSelectMode = false;
+let ventaSelectedIds = new Set();
+function limpiarSeleccionVentas(){
+  ventaSelectMode = false;
+  ventaSelectedIds = new Set();
+}
 function resetDraftOrder(){
   draftOrder = [];
   editingVentaId = null;
@@ -2106,28 +2141,32 @@ function renderVentasDateChips(){
     const chip = document.createElement('button');
     chip.className = 'date-chip' + (d===currentVentasDate ? ' active' : '');
     chip.textContent = formatDateEs(d) + ' · ' + fmt(total);
-    chip.addEventListener('click', ()=>{ currentVentasDate = d; resetDraftOrder(); renderVentas(); });
+    chip.addEventListener('click', ()=>{ currentVentasDate = d; resetDraftOrder(); limpiarSeleccionVentas(); renderVentas(); });
     wrap.appendChild(chip);
   });
 }
 document.getElementById('ventasDate').addEventListener('change', e=>{
   currentVentasDate = e.target.value || todayStr();
   resetDraftOrder();
+  limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasPrevDay').addEventListener('click', ()=>{
   currentVentasDate = shiftDate(currentVentasDate, -1);
   resetDraftOrder();
+  limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasNextDay').addEventListener('click', ()=>{
   currentVentasDate = shiftDate(currentVentasDate, 1);
   resetDraftOrder();
+  limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasToday').addEventListener('click', ()=>{
   currentVentasDate = todayStr();
   resetDraftOrder();
+  limpiarSeleccionVentas();
   renderVentas();
 });
 
@@ -2501,6 +2540,21 @@ function renderClientesResumen(){
         </div>`).join('')}
     </div>`;
 }
+/* Estas tres funciones leen una entrada de ventasLog (ya sea el formato nuevo, agrupado por
+   pedido con varios productos, o el formato anterior de una sola línea) y devuelven siempre lo
+   mismo — se usan tanto en la lista de "Ventas registradas" como en la imagen para compartir,
+   para no tener la misma lógica escrita dos veces. */
+function ventaEntryTotal(e){
+  return Array.isArray(e.items) ? Number(e.total||0) : (Number(e.cantidad)||1) * Number(e.valorUnidad||0);
+}
+function ventaEntryResumen(e){
+  if(Array.isArray(e.items)) return e.items.map(i=> (i.cantidad>1 ? i.cantidad+'× ' : '') + i.producto).join(', ');
+  const cant = e.cantidad || 1;
+  return (cant>1 ? cant+'× ' : '') + e.producto;
+}
+function ventaEntryNombre(e){
+  return Array.isArray(e.items) ? (e.cliente || 'Venta rápida') : null;
+}
 function renderVentaQuickList(){
   renderClientesResumen();
   const wrap = document.getElementById('ventaQuickList');
@@ -2508,33 +2562,55 @@ function renderVentaQuickList(){
   let items = state.ventasLog.filter(e=>e.date===currentVentasDate);
   if(!isAdmin) items = items.filter(e=> e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName);
   items = items.slice(-30).reverse();
+  // las ventas visibles ahora mismo son las únicas que se pueden tener seleccionadas — si se
+  // cambió de rol/filtro y una quedó fuera de la vista, se descarta de la selección
+  const idsVisibles = new Set(items.map(e=>e.id));
+  Array.from(ventaSelectedIds).forEach(id=>{ if(!idsVisibles.has(id)) ventaSelectedIds.delete(id); });
   if(!items.length){
     wrap.innerHTML = '<p class="section-sub" style="margin:6px 0 0;">Aún no has confirmado ninguna venta hoy.</p>';
+    updateVentaShareBar();
     return;
   }
   wrap.innerHTML = items.map(e=>{
     const time = new Date(e.ts).toLocaleTimeString('es-CO', {hour:'2-digit', minute:'2-digit'});
     const quien = isAdmin && e.vendedor ? ' · ' + escapeHtml(e.vendedor) : '';
-    if(Array.isArray(e.items)){
-      // pedido agrupado (con nombre de cliente/mesa y varios productos)
-      const resumen = e.items.map(i=> (i.cantidad>1 ? i.cantidad+'× ' : '') + i.producto).join(', ');
-      const nombre = e.cliente ? escapeHtml(e.cliente) : 'Venta rápida';
-      return `<div class="quick-item">
-          <div class="qi-name">${nombre}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien} · ${escapeHtml(resumen)}</span></div>
-          <div class="qi-price">${fmt(e.total)}</div>
+    const total = ventaEntryTotal(e);
+    const resumen = escapeHtml(ventaEntryResumen(e));
+    const nombreBruto = ventaEntryNombre(e);
+    const nombreHtml = nombreBruto!=null ? escapeHtml(nombreBruto) : '';
+    const detalle = nombreBruto!=null
+      ? `${nombreHtml}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien} · ${resumen}</span>`
+      : `${resumen}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien}</span>`;
+    const checked = ventaSelectedIds.has(e.id) ? 'checked' : '';
+    const checkboxHtml = ventaSelectMode
+      ? `<input type="checkbox" class="qi-check" data-select-venta="${e.id}" ${checked} aria-label="Seleccionar esta venta">`
+      : '';
+    const accionesHtml = ventaSelectMode ? '' : `
           <button class="del-btn edit-btn" data-editventa="${e.id}" title="Editar esta venta" aria-label="Editar esta venta">✎</button>
-          <button class="del-btn" data-undo="${e.id}" title="Eliminar esta venta" aria-label="Eliminar esta venta">✕</button>
+          <button class="del-btn" data-undo="${e.id}" title="Eliminar esta venta" aria-label="Eliminar esta venta">✕</button>`;
+    return `<div class="quick-item${ventaSelectMode ? ' qi-selectable' : ''}"${ventaSelectMode ? ` data-select-row="${e.id}"` : ''}>
+          ${checkboxHtml}
+          <div class="qi-name">${detalle}</div>
+          <div class="qi-price">${fmt(total)}</div>
+          ${accionesHtml}
         </div>`;
-    }
-    // formato anterior (una línea por producto) — se mantiene por compatibilidad con ventas ya guardadas
-    const cant = e.cantidad || 1;
-    return `<div class="quick-item">
-        <div class="qi-name">${cant>1 ? cant+'× ' : ''}${escapeHtml(e.producto)}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien}</span></div>
-        <div class="qi-price">${fmt(cant*e.valorUnidad)}</div>
-        <button class="del-btn edit-btn" data-editventa="${e.id}" title="Editar esta venta" aria-label="Editar esta venta">✎</button>
-        <button class="del-btn" data-undo="${e.id}" title="Eliminar esta venta" aria-label="Eliminar esta venta">✕</button>
-      </div>`;
   }).join('');
+  updateVentaShareBar();
+}
+/* Barra de "compartir por imagen": cuenta y suma lo seleccionado, y muestra/oculta según si el
+   modo selección está activo. */
+function updateVentaShareBar(){
+  const bar = document.getElementById('ventaShareBar');
+  if(!bar) return;
+  bar.style.display = ventaSelectMode ? '' : 'none';
+  if(!ventaSelectMode) return;
+  const seleccionadas = state.ventasLog.filter(e=> ventaSelectedIds.has(e.id));
+  const total = seleccionadas.reduce((s,e)=> s + ventaEntryTotal(e), 0);
+  document.getElementById('ventaShareCount').textContent =
+    seleccionadas.length + (seleccionadas.length===1 ? ' venta seleccionada' : ' ventas seleccionadas');
+  document.getElementById('ventaShareTotal').textContent = fmt(total);
+  const shareBtn = document.getElementById('ventaShareImageBtn');
+  if(shareBtn) shareBtn.disabled = seleccionadas.length===0;
 }
 /* Carga una venta ya registrada en el pedido actual para corregirla — sin tocar todavía el
    registro original: si se cancela la edición (o simplemente se navega a otro lado sin guardar
@@ -2565,6 +2641,14 @@ function startEditVenta(id){
   scheduleSave('ventas');
 }
 document.getElementById('ventaQuickList').addEventListener('click', e=>{
+  if(ventaSelectMode){
+    const row = e.target.closest('[data-select-row]');
+    if(!row) return;
+    const id = row.dataset.selectRow;
+    if(ventaSelectedIds.has(id)) ventaSelectedIds.delete(id); else ventaSelectedIds.add(id);
+    renderVentaQuickList();
+    return;
+  }
   const editId = e.target.dataset.editventa;
   if(editId){ startEditVenta(editId); return; }
   const id = e.target.dataset.undo;
@@ -2582,6 +2666,171 @@ document.getElementById('ventaQuickList').addEventListener('click', e=>{
   renderVentasDateChips();
   scheduleSave('ventas');
 });
+
+/* ---------- Seleccionar ventas y compartirlas como imagen ---------- */
+document.getElementById('ventaSelectModeBtn').addEventListener('click', function(){
+  ventaSelectMode = !ventaSelectMode;
+  if(!ventaSelectMode) ventaSelectedIds = new Set();
+  this.textContent = ventaSelectMode ? '✕ Cancelar selección' : '☑ Seleccionar';
+  renderVentaQuickList();
+});
+document.getElementById('ventaShareMarkAllBtn').addEventListener('click', ()=>{
+  const isAdmin = currentRole==='admin';
+  let items = state.ventasLog.filter(e=>e.date===currentVentasDate);
+  if(!isAdmin) items = items.filter(e=> e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName);
+  items.slice(-30).forEach(e=> ventaSelectedIds.add(e.id));
+  renderVentaQuickList();
+});
+document.getElementById('ventaShareUnmarkAllBtn').addEventListener('click', ()=>{
+  ventaSelectedIds = new Set();
+  renderVentaQuickList();
+});
+document.getElementById('ventaShareImageBtn').addEventListener('click', buildVentasShareImage);
+/* Corta un texto largo en varias líneas para que quepa en un ancho máximo dentro del canvas
+   (no hay salto de línea automático al dibujar texto en un <canvas>). */
+function wrapCanvasText(ctx, text, maxWidth){
+  const words = String(text).split(' ');
+  const lines = [];
+  let current = '';
+  words.forEach(word=>{
+    const test = current ? current + ' ' + word : word;
+    if(current && ctx.measureText(test).width > maxWidth){
+      lines.push(current);
+      current = word;
+    }else{
+      current = test;
+    }
+  });
+  if(current) lines.push(current);
+  return lines.length ? lines : [''];
+}
+/* Dibuja una imagen PNG con las ventas marcadas (fecha, hora, cliente/producto, método, quién
+   la vendió y total) y la comparte con el selector nativo del teléfono (WhatsApp, etc.) cuando
+   el navegador lo permite; si no, descarga la imagen para compartirla manualmente. */
+async function buildVentasShareImage(){
+  const seleccionadas = state.ventasLog.filter(e=> ventaSelectedIds.has(e.id)).slice().sort((a,b)=> a.ts - b.ts);
+  if(!seleccionadas.length) return;
+  const btn = document.getElementById('ventaShareImageBtn');
+  const textoOriginal = btn ? btn.textContent : '📤 Compartir imagen';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
+  try{
+    const isAdmin = currentRole==='admin';
+    const width = 720;
+    const padX = 32;
+    const contentWidth = width - padX*2;
+
+    const medidor = document.createElement('canvas').getContext('2d');
+    medidor.font = '400 12.5px "Work Sans", sans-serif';
+
+    const filas = seleccionadas.map(e=>{
+      const time = new Date(e.ts).toLocaleTimeString('es-CO', {hour:'2-digit', minute:'2-digit'});
+      const quien = isAdmin && e.vendedor ? ' · ' + e.vendedor : '';
+      const total = ventaEntryTotal(e);
+      const resumen = ventaEntryResumen(e);
+      const nombreBruto = ventaEntryNombre(e);
+      const titulo = nombreBruto!=null ? nombreBruto : resumen;
+      const subtitulo = nombreBruto!=null
+        ? `${time} · ${metodoLabel(e.metodo)}${quien} · ${resumen}`
+        : `${time} · ${metodoLabel(e.metodo)}${quien}`;
+      const subtituloLineas = wrapCanvasText(medidor, subtitulo, contentWidth);
+      return {titulo, subtituloLineas, total};
+    });
+
+    const headerHeight = 88;
+    const footerHeight = 74;
+    const rowPadding = 14;
+    const tituloLineHeight = 22;
+    const subtituloLineHeight = 17;
+    const rowHeights = filas.map(f=> rowPadding + tituloLineHeight + f.subtituloLineas.length*subtituloLineHeight + rowPadding);
+    const totalRowsHeight = rowHeights.reduce((s,h)=>s+h, 0);
+    const height = Math.round(headerHeight + totalRowsHeight + footerHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#FBF3E2';
+    ctx.fillRect(0,0,width,height);
+
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 26px "Work Sans", sans-serif';
+    ctx.fillText('Chuzomanía', padX, 40);
+    ctx.fillStyle = '#5A4636';
+    ctx.font = '600 14px "Work Sans", sans-serif';
+    const esHoy = currentVentasDate===todayStr();
+    ctx.fillText('Ventas ' + (esHoy ? 'de hoy' : 'del ' + formatDateEs(currentVentasDate)), padX, 62);
+    ctx.strokeStyle = 'rgba(42,27,16,.18)';
+    ctx.beginPath(); ctx.moveTo(padX, 76); ctx.lineTo(width-padX, 76); ctx.stroke();
+
+    let cursorY = headerHeight;
+    filas.forEach((f, i)=>{
+      cursorY += rowPadding;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '700 15px "Work Sans", sans-serif';
+      ctx.fillText(f.titulo, padX, cursorY + 14, contentWidth - 110);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#E2481B';
+      ctx.fillText(fmt(f.total), width - padX, cursorY + 14);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8A7A66';
+      ctx.font = '400 12.5px "Work Sans", sans-serif';
+      f.subtituloLineas.forEach((line, li)=>{
+        ctx.fillText(line, padX, cursorY + tituloLineHeight + (li+1)*subtituloLineHeight - 4);
+      });
+      cursorY += tituloLineHeight + f.subtituloLineas.length*subtituloLineHeight + rowPadding;
+      if(i < filas.length-1){
+        ctx.strokeStyle = 'rgba(42,27,16,.1)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY); ctx.lineTo(width-padX, cursorY); ctx.stroke();
+      }
+    });
+
+    const totalGeneral = filas.reduce((s,f)=>s+f.total, 0);
+    ctx.strokeStyle = 'rgba(42,27,16,.25)';
+    ctx.beginPath(); ctx.moveTo(padX, cursorY+6); ctx.lineTo(width-padX, cursorY+6); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#241811';
+    ctx.font = '700 17px "Work Sans", sans-serif';
+    ctx.fillText(`Total (${filas.length} venta${filas.length===1?'':'s'})`, padX, cursorY + 40);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 20px "Work Sans", sans-serif';
+    ctx.fillText(fmt(totalGeneral), width - padX, cursorY + 40);
+    ctx.textAlign = 'left';
+
+    const blob = await new Promise(resolve=> canvas.toBlob(resolve, 'image/png'));
+    if(!blob) throw new Error('No se pudo generar la imagen');
+
+    const filename = `ventas-${currentVentasDate}.png`;
+    let compartido = false;
+    if(navigator.canShare){
+      try{
+        const file = new File([blob], filename, {type:'image/png'});
+        if(navigator.canShare({files:[file]})){
+          await navigator.share({files:[file], title:'Ventas Chuzomanía', text:'Ventas ' + formatDateEs(currentVentasDate)});
+          compartido = true;
+        }
+      }catch(err){
+        if(err && err.name==='AbortError') compartido = true; // el usuario canceló a propósito
+      }
+    }
+    if(!compartido){
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=> URL.revokeObjectURL(url), 4000);
+    }
+  }catch(err){
+    alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
+  }finally{
+    if(btn){ btn.disabled = ventaSelectedIds.size===0; btn.textContent = textoOriginal; }
+  }
+}
 
 let ventaClearDayArmed = false, ventaClearDayArmedTimer = null;
 document.getElementById('ventaClearDayBtn').addEventListener('click', function(){
