@@ -907,6 +907,25 @@
       </div>
       <div class="date-chips" id="comprasDateChips"></div>
 
+      <button class="btn ghost small" id="comprasSelectDiasBtn" type="button">📅 Seleccionar días</button>
+      <div class="ventas-dias-panel" id="comprasDiasPanel" style="display:none;">
+        <p class="section-sub" style="margin:0 0 8px;">Marca los días que quieres sumar — la imagen (si la compartes) muestra lo comprado cada día y el total:</p>
+        <div class="resumen-days-actions">
+          <button class="btn ghost small" type="button" id="comprasDiasMarkAllBtn">Marcar todos</button>
+          <button class="btn ghost small" type="button" id="comprasDiasUnmarkAllBtn">Desmarcar todos</button>
+        </div>
+        <div id="comprasDiasList" class="resumen-days-list"></div>
+        <div class="ventas-share-bar" id="comprasDiasShareBar">
+          <div class="vsb-info">
+            <span id="comprasDiasCount">0 días seleccionados</span>
+            <b id="comprasDiasTotal">$0</b>
+          </div>
+          <div class="vsb-actions">
+            <button class="btn small" id="comprasDiasShareImageBtn" type="button" title="Genera una imagen con el total comprado de cada día marcado">📤 Compartir imagen</button>
+          </div>
+        </div>
+      </div>
+
       <div class="seg-toggle" id="comprasViewToggle">
         <button class="seg-btn active" data-view="rapido" type="button">⚡ Registro rápido</button>
         <button class="seg-btn" data-view="tabla" type="button">📋 Tabla completa</button>
@@ -3601,6 +3620,145 @@ document.getElementById('comprasToday').addEventListener('click', ()=>{
   currentComprasDate = todayStr();
   renderCompras();
 });
+
+/* ---------- Seleccionar días completos de compra y compartir el total (o un resumen por día) ---------- */
+let comprasDiasMode = false;
+let comprasDiasSeleccionados = new Set();
+function getComprasDiasConCompra(){
+  return Object.keys(state.compras||{})
+    .filter(d=> (state.compras[d]||[]).some(r=> Number(r.canoViejo||0) || Number(r.monteria||0)))
+    .sort((a,b)=> b.localeCompare(a))
+    .map(date=>({date, total: (state.compras[date]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0)}));
+}
+function renderComprasDiasList(){
+  const wrap = document.getElementById('comprasDiasList');
+  if(!wrap) return;
+  const dias = getComprasDiasConCompra();
+  const fechasValidas = new Set(dias.map(d=>d.date));
+  Array.from(comprasDiasSeleccionados).forEach(d=>{ if(!fechasValidas.has(d)) comprasDiasSeleccionados.delete(d); });
+  if(!dias.length){
+    wrap.innerHTML = '<div class="resumen-days-empty">Aún no hay compras registradas.</div>';
+    updateComprasDiasBar();
+    return;
+  }
+  wrap.innerHTML = dias.map(({date, total})=>{
+    const checked = comprasDiasSeleccionados.has(date) ? 'checked' : '';
+    return `<label class="resumen-day-row">
+        <input type="checkbox" data-dia="${date}" ${checked}>
+        <div class="rd-main">
+          <span class="rd-label">${formatDateEs(date)}</span>
+          <span class="rd-breakdown">Comprado ${fmt(total)}</span>
+        </div>
+      </label>`;
+  }).join('');
+  updateComprasDiasBar();
+}
+function updateComprasDiasBar(){
+  const dias = getComprasDiasConCompra();
+  const totalPorDia = new Map(dias.map(d=>[d.date, d.total]));
+  const seleccionadas = Array.from(comprasDiasSeleccionados);
+  const total = seleccionadas.reduce((s,d)=> s + (totalPorDia.get(d)||0), 0);
+  document.getElementById('comprasDiasCount').textContent =
+    seleccionadas.length + (seleccionadas.length===1 ? ' día seleccionado' : ' días seleccionados');
+  document.getElementById('comprasDiasTotal').textContent = fmt(total);
+  const btn = document.getElementById('comprasDiasShareImageBtn');
+  if(btn) btn.disabled = seleccionadas.length===0;
+}
+document.getElementById('comprasDiasList').addEventListener('change', e=>{
+  const dia = e.target.dataset.dia;
+  if(!dia) return;
+  if(e.target.checked) comprasDiasSeleccionados.add(dia); else comprasDiasSeleccionados.delete(dia);
+  updateComprasDiasBar();
+});
+document.getElementById('comprasDiasMarkAllBtn').addEventListener('click', ()=>{
+  getComprasDiasConCompra().forEach(d=> comprasDiasSeleccionados.add(d.date));
+  renderComprasDiasList();
+});
+document.getElementById('comprasDiasUnmarkAllBtn').addEventListener('click', ()=>{
+  comprasDiasSeleccionados = new Set();
+  renderComprasDiasList();
+});
+document.getElementById('comprasSelectDiasBtn').addEventListener('click', function(){
+  comprasDiasMode = !comprasDiasMode;
+  if(comprasDiasMode) renderComprasDiasList();
+  else comprasDiasSeleccionados = new Set();
+  document.getElementById('comprasDiasPanel').style.display = comprasDiasMode ? '' : 'none';
+  this.textContent = comprasDiasMode ? '✕ Cancelar' : '📅 Seleccionar días';
+});
+/* Dibuja una imagen PNG con un renglón por cada día marcado (fecha + total comprado ese día) y
+   el total general al final. */
+async function buildComprasDiasShareImage(){
+  const dias = getComprasDiasConCompra().filter(d=> comprasDiasSeleccionados.has(d.date)).sort((a,b)=> a.date.localeCompare(b.date));
+  if(!dias.length) return;
+  const btn = document.getElementById('comprasDiasShareImageBtn');
+  const textoOriginal = btn ? btn.textContent : '📤 Compartir imagen';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
+  try{
+    const width = 640;
+    const padX = 32;
+    const headerHeight = 88;
+    const footerHeight = 74;
+    const rowHeight = 46;
+    const height = Math.round(headerHeight + dias.length*rowHeight + footerHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#FBF3E2';
+    ctx.fillRect(0,0,width,height);
+
+    ctx.fillStyle = '#5B8C3E';
+    ctx.font = '700 26px "Work Sans", sans-serif';
+    ctx.fillText('Chuzomanía', padX, 40);
+    ctx.fillStyle = '#5A4636';
+    ctx.font = '600 14px "Work Sans", sans-serif';
+    ctx.fillText(`Resumen de compras — ${dias.length} día${dias.length===1?'':'s'}`, padX, 62);
+    ctx.strokeStyle = 'rgba(42,27,16,.18)';
+    ctx.beginPath(); ctx.moveTo(padX, 76); ctx.lineTo(width-padX, 76); ctx.stroke();
+
+    let cursorY = headerHeight;
+    dias.forEach((d, i)=>{
+      const etiqueta = formatDateEs(d.date);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '600 15px "Work Sans", sans-serif';
+      ctx.fillText(etiqueta.charAt(0).toUpperCase()+etiqueta.slice(1), padX, cursorY + 28);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#5B8C3E';
+      ctx.font = '700 16px "Work Sans", sans-serif';
+      ctx.fillText(fmt(d.total), width - padX, cursorY + 28);
+      ctx.textAlign = 'left';
+      cursorY += rowHeight;
+      if(i < dias.length-1){
+        ctx.strokeStyle = 'rgba(42,27,16,.1)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY); ctx.lineTo(width-padX, cursorY); ctx.stroke();
+      }
+    });
+
+    const totalGeneral = dias.reduce((s,d)=>s+d.total, 0);
+    ctx.strokeStyle = 'rgba(42,27,16,.25)';
+    ctx.beginPath(); ctx.moveTo(padX, cursorY+6); ctx.lineTo(width-padX, cursorY+6); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#241811';
+    ctx.font = '700 17px "Work Sans", sans-serif';
+    ctx.fillText('Total', padX, cursorY + 40);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#5B8C3E';
+    ctx.font = '700 20px "Work Sans", sans-serif';
+    ctx.fillText(fmt(totalGeneral), width - padX, cursorY + 40);
+    ctx.textAlign = 'left';
+
+    await compartirODescargarImagen(canvas, `compras-dias-${todayStr()}.png`, 'Compras Chuzomanía', `Resumen de compras — ${dias.length} día${dias.length===1?'':'s'}`);
+  }catch(err){
+    alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
+  }finally{
+    if(btn){ btn.disabled = comprasDiasSeleccionados.size===0; btn.textContent = textoOriginal; }
+  }
+}
+document.getElementById('comprasDiasShareImageBtn').addEventListener('click', buildComprasDiasShareImage);
+
 document.getElementById('resumenDate').addEventListener('change', e=>{
   currentResumenDate = e.target.value || todayStr();
   updateResumen();
