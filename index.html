@@ -489,6 +489,10 @@
     font-size:13px; color:var(--ink-soft);
   }
   .quick-total b{font-size:18px; color:var(--ink); font-variant-numeric:tabular-nums;}
+  .quick-total.ventas-ref{
+    background:rgba(226,72,27,.1); border-radius:10px; padding:9px 12px; margin-bottom:10px; color:var(--ember-dark);
+  }
+  .quick-total.ventas-ref b{color:var(--ember);}
 
   .quick-list{display:flex; flex-direction:column; gap:8px;}
   .quick-list-head{display:flex; align-items:center; justify-content:space-between; margin:14px 0 6px;}
@@ -925,6 +929,11 @@
         <div class="punto-toggle" id="pagosPuntoToggle">
           <button class="punto-btn" data-punto="canoViejo" type="button">Caño Viejo</button>
           <button class="punto-btn" data-punto="monteria" type="button">Montería</button>
+        </div>
+
+        <div class="quick-total ventas-ref" id="pagosVentasRef">
+          <span id="pagosVentasRefLabel">Vendido hoy · Caño Viejo</span>
+          <b id="pagosVentasRefValue">$0</b>
         </div>
 
         <div class="quick-add-card">
@@ -2763,6 +2772,30 @@ document.getElementById('pagosQuickList').addEventListener('click', e=>{
   scheduleSave('pagos');
 });
 
+/* Quita tildes/mayúsculas para poder comparar nombres de colaboradores sin depender de cómo
+   los haya escrito exactamente quien los configuró en Ajustes ("Montería" vs "monteria", etc). */
+function normalizarNombre(s){
+  return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+}
+/* Busca, entre los colaboradores configurados, el que corresponde a un punto de venta
+   (canoViejo/monteria) comparando su nombre. Devuelve null si ninguno coincide (por ejemplo,
+   si el colaborador de ese punto todavía no existe o le pusieron otro nombre). */
+function empleadoDelPunto(punto){
+  const etiqueta = punto==='canoViejo' ? 'cano viejo' : 'monteria';
+  const empleados = (state.security && state.security.empleados) || [];
+  return empleados.find(e=> normalizarNombre(e.nombre)===etiqueta)
+      || empleados.find(e=> normalizarNombre(e.nombre).includes(etiqueta))
+      || null;
+}
+/* Total vendido ese día por el colaborador de ese punto (según el registro de ventas por
+   colaborador, ventasLog) — sirve de referencia en Pagos para saber cuánto pagarle. */
+function ventasDelPuntoEnFecha(punto, dateStr){
+  const emp = empleadoDelPunto(punto);
+  if(!emp) return null;
+  return (state.ventasLog||[])
+    .filter(v=> v.date===dateStr && v.empleadoId===emp.id)
+    .reduce((s,v)=>s+Number(v.total||0),0);
+}
 function renderQuickPagos(){
   const punto = state.uiPrefs.pagosPunto;
   document.querySelectorAll('#pagosPuntoToggle .punto-btn').forEach(b=>{
@@ -2774,6 +2807,13 @@ function renderQuickPagos(){
   document.getElementById('pagosQuickTotalLabel').textContent =
     (currentPagosDate===todayStr() ? 'Total hoy' : 'Total ' + formatDateEs(currentPagosDate)) +
     ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
+
+  const sufijoFecha = currentPagosDate===todayStr() ? 'hoy' : formatDateEs(currentPagosDate);
+  const ventasRef = ventasDelPuntoEnFecha(punto, currentPagosDate);
+  document.getElementById('pagosVentasRefLabel').textContent =
+    'Vendido ' + sufijoFecha + ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
+  document.getElementById('pagosVentasRefValue').textContent =
+    ventasRef===null ? 'sin datos' : fmt(ventasRef);
 
   const wrap = document.getElementById('pagosQuickList');
   const entries = (state.pagosLog||[])
