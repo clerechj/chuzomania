@@ -995,7 +995,7 @@
         </div>
 
         <div class="quick-total ventas-ref" id="pagosVentasRef">
-          <span id="pagosVentasRefLabel">Vendido hoy · Caño Viejo</span>
+          <span id="pagosVentasRefLabel">Vendido hoy (todo el negocio)</span>
           <b id="pagosVentasRefValue">$0</b>
         </div>
 
@@ -3234,28 +3234,14 @@ document.getElementById('pagosQuickList').addEventListener('click', e=>{
   scheduleSave('pagos');
 });
 
-/* Quita tildes/mayúsculas para poder comparar nombres de colaboradores sin depender de cómo
-   los haya escrito exactamente quien los configuró en Ajustes ("Montería" vs "monteria", etc). */
-function normalizarNombre(s){
-  return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
-}
-/* Busca, entre los colaboradores configurados, el que corresponde a un punto de venta
-   (canoViejo/monteria) comparando su nombre. Devuelve null si ninguno coincide (por ejemplo,
-   si el colaborador de ese punto todavía no existe o le pusieron otro nombre). */
-function empleadoDelPunto(punto){
-  const etiqueta = punto==='canoViejo' ? 'cano viejo' : 'monteria';
-  const empleados = (state.security && state.security.empleados) || [];
-  return empleados.find(e=> normalizarNombre(e.nombre)===etiqueta)
-      || empleados.find(e=> normalizarNombre(e.nombre).includes(etiqueta))
-      || null;
-}
-/* Total vendido ese día por el colaborador de ese punto (según el registro de ventas por
-   colaborador, ventasLog) — sirve de referencia en Pagos para saber cuánto pagarle. */
-function ventasDelPuntoEnFecha(punto, dateStr){
-  const emp = empleadoDelPunto(punto);
-  if(!emp) return null;
+/* Total vendido ese día, sumando TODAS las ventas sin importar quién las registró — sirve de
+   referencia en Pagos para saber cuánto pagarle a los colaboradores. No se separa por punto de
+   venta (Caño Viejo/Montería): a diferencia de Compras y Pagos, las ventas no se anotan por
+   punto — en la práctica casi todas quedan registradas como "Administrador", así que intentar
+   repartirlas por colaborador dejaba esta cifra en $0 casi siempre. */
+function ventasTotalEnFecha(dateStr){
   return (state.ventasLog||[])
-    .filter(v=> v.date===dateStr && v.empleadoId===emp.id)
+    .filter(v=> v.date===dateStr)
     .reduce((s,v)=>s+Number(v.total||0),0);
 }
 function renderQuickPagos(){
@@ -3271,11 +3257,9 @@ function renderQuickPagos(){
     ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
 
   const sufijoFecha = currentPagosDate===todayStr() ? 'hoy' : formatDateEs(currentPagosDate);
-  const ventasRef = ventasDelPuntoEnFecha(punto, currentPagosDate);
-  document.getElementById('pagosVentasRefLabel').textContent =
-    'Vendido ' + sufijoFecha + ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
-  document.getElementById('pagosVentasRefValue').textContent =
-    ventasRef===null ? 'sin datos' : fmt(ventasRef);
+  const ventasRef = ventasTotalEnFecha(currentPagosDate);
+  document.getElementById('pagosVentasRefLabel').textContent = 'Vendido ' + sufijoFecha + ' (todo el negocio)';
+  document.getElementById('pagosVentasRefValue').textContent = fmt(ventasRef);
 
   const wrap = document.getElementById('pagosQuickList');
   const entries = (state.pagosLog||[])
