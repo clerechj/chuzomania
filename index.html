@@ -242,10 +242,14 @@
   }
   .prod-card .del-btn{flex-shrink:0; padding:4px 6px;}
   .prod-card-prices{display:flex; gap:8px;}
-  .prod-price-field{flex:1; min-width:0;}
+  .prod-price-field{flex:1; min-width:0; display:block;}
   .prod-price-field .ppf-label{display:block; font-size:10.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.2px; margin-bottom:3px;}
   .prod-price-field .money-field input.money-input{width:100%; box-sizing:border-box; font-size:13px; padding:8px 8px 8px 16px !important;}
   .prod-price-field .money-sign{left:6px; font-size:12px;}
+  .prod-visibilidad-select{
+    width:100%; box-sizing:border-box; font-family:'Work Sans',sans-serif; font-weight:600; font-size:11.5px;
+    color:var(--ink); border:1.5px solid var(--line); border-radius:8px; padding:7px 6px; background:#fff;
+  }
   .drag-handle{
     border:none; background:#fff; color:var(--ink-soft); border-radius:6px;
     width:24px; height:34px; cursor:grab; flex-shrink:0; padding:0;
@@ -1476,15 +1480,32 @@ function ventasTemplate(){
   const dates = Object.keys(state.ventas || {}).filter(d=>state.ventas[d] && state.ventas[d].length);
   if(dates.length){
     dates.sort((a,b)=> b.localeCompare(a));
-    return state.ventas[dates[0]].map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null}));
+    return state.ventas[dates[0]].map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null, visibilidad:r.visibilidad||'todos'}));
   }
-  return seed.ventas.map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null}));
+  return seed.ventas.map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null, visibilidad:'todos'}));
 }
 function ensureVentasDate(dateStr){
   if(!state.ventas[dateStr]){
-    state.ventas[dateStr] = ventasTemplate().map(r=>({id:'r'+(uidCounter++), producto:r.producto, cantidad:r.cantidad, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo, disponible: r.disponible!==false, stock: r.stock ?? null}));
+    state.ventas[dateStr] = ventasTemplate().map(r=>({id:'r'+(uidCounter++), producto:r.producto, cantidad:r.cantidad, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo, disponible: r.disponible!==false, stock: r.stock ?? null, visibilidad: r.visibilidad||'todos'}));
   }
   return state.ventas[dateStr];
+}
+// ¿El colaborador actualmente en sesión es el de Caño Viejo? Se usa para filtrar qué productos
+// ve en Registro rápido (Administrador siempre ve todo; los demás colaboradores no ven "soloCanoViejo").
+function esColaboradorCanoViejo(){
+  if(currentRole!=='empleado') return false;
+  const emp = (state.security.empleados||[]).find(e=>e.id===currentEmployeeId);
+  const nombre = ((emp && emp.nombre) || currentEmployeeName || '').toLowerCase();
+  return nombre.includes('caño viejo') || nombre.includes('cano viejo') || nombre.includes('cañoviejo');
+}
+function productoVisibleParaSesion(row){
+  if(currentRole==='admin') return true;
+  const vis = row.visibilidad || 'todos';
+  if(vis==='todos') return true;
+  const esCV = esColaboradorCanoViejo();
+  if(vis==='soloCanoViejo') return esCV;
+  if(vis==='ocultoCanoViejo') return !esCV;
+  return true;
 }
 /* Fusiona filas con el mismo nombre de producto (sin importar mayúsculas/espacios) sumando sus valores.
    Se usa SOLO para armar el catálogo base de una fecha nueva (para que la lista de productos no crezca
@@ -2119,7 +2140,15 @@ function renderVentas(){
           <span class="ppf-label">Gan/u</span>
           <div class="money-field"><span class="money-sign">$</span><input type="text" inputmode="numeric" class="money-input" data-f="ganancia" value="${fmtNum(row.ganancia)}"></div>
         </label>
-      </div>`;
+      </div>
+      <label class="prod-price-field" style="margin-top:8px;">
+        <span class="ppf-label">Quién lo ve</span>
+        <select class="prod-visibilidad-select" data-f="visibilidad">
+          <option value="todos" ${(!row.visibilidad||row.visibilidad==='todos')?'selected':''}>Todos los puntos</option>
+          <option value="soloCanoViejo" ${row.visibilidad==='soloCanoViejo'?'selected':''}>Solo Caño Viejo (y Administrador)</option>
+          <option value="ocultoCanoViejo" ${row.visibilidad==='ocultoCanoViejo'?'selected':''}>Ocultar de Caño Viejo</option>
+        </select>
+      </label>`;
     tbody.appendChild(card);
   });
   updateVentasFooter();
@@ -2263,7 +2292,7 @@ function renderVentaQuickGrid(filter){
   const grid = document.getElementById('ventaQuickGrid');
   const list = ensureVentasDate(currentVentasDate);
   const f = (filter||'').trim().toLowerCase();
-  const items = list.filter(r=> r.producto && (!f || r.producto.toLowerCase().includes(f)));
+  const items = list.filter(r=> r.producto && (!f || r.producto.toLowerCase().includes(f)) && productoVisibleParaSesion(r));
   if(!items.length){
     grid.innerHTML = '<div class="venta-empty">No hay productos que coincidan.</div>';
     return;
@@ -4207,8 +4236,8 @@ document.querySelector('#tbl-ventas .prod-cards').addEventListener('input', e=>{
   if(f==='precioPublico'){
     updateVentasFooter();
   }
-  // el nombre o el precio público también se muestran en el registro rápido: se refresca al instante
-  if(f==='producto' || f==='precioPublico'){
+  // el nombre, el precio público o quién lo ve también afectan el registro rápido: se refresca al instante
+  if(f==='producto' || f==='precioPublico' || f==='visibilidad'){
     const searchEl = document.getElementById('ventaQuickSearch');
     if(searchEl) renderVentaQuickGrid(searchEl.value);
   }
@@ -4357,7 +4386,7 @@ document.querySelectorAll('[data-add]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     snapshotForUndo();
     const t = btn.dataset.add;
-    if(t==='ventas'){ ensureVentasDate(currentVentasDate).push({id:'r'+(uidCounter++), producto:'', cantidad:0, precioPublico:0, valorUnidad:0, ganancia:0, metodo:'efectivo', disponible:true, stock:null}); renderVentas(); }
+    if(t==='ventas'){ ensureVentasDate(currentVentasDate).push({id:'r'+(uidCounter++), producto:'', cantidad:0, precioPublico:0, valorUnidad:0, ganancia:0, metodo:'efectivo', disponible:true, stock:null, visibilidad:'todos'}); renderVentas(); }
     if(t==='compras'){ ensureComprasDate(currentComprasDate).push({id:'r'+(uidCounter++), producto:'', canoViejo:0, monteria:0}); renderCompras(); }
     if(t==='pagos'){ ensurePagosDate(currentPagosDate).push({id:'r'+(uidCounter++), pago:'', canoViejo:0, monteria:0}); renderPagos(); }
     if(t==='insumos'){ state.insumos.push({id:'r'+(uidCounter++), producto:'', valorInsumo:0, valorUnidad:0, ganancia:0}); renderInsumos(); }
