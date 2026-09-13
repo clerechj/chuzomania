@@ -550,6 +550,15 @@
   #loginPin:focus{outline:none; border-color:var(--mustard);}
   #loginBtn{width:100%;}
   .login-error{color:var(--red); font-size:12.5px; margin-top:10px; min-height:16px;}
+  /* Mientras se conecta con Firebase (nube) para saber qué colaboradores existen, se oculta el
+     formulario de acceso y se muestra este aviso en su lugar, para que no parezca que la página
+     se quedó en blanco o rota mientras carga. */
+  .login-loading{display:none; font-size:12.5px; color:var(--ink-soft); margin:-8px 0 18px;}
+  .login-card--loading .login-loading{display:block;}
+  .login-card--loading .role-toggle,
+  .login-card--loading .login-pin-label,
+  .login-card--loading #loginPin,
+  .login-card--loading #loginBtn{display:none;}
 
   .accesos-card{background:var(--paper2); border-radius:12px; padding:14px; margin-top:18px;}
   .accesos-card h3{font-family:'Anton',sans-serif; font-weight:400; font-size:15px; color:var(--ink); margin:0 0 10px;}
@@ -601,10 +610,11 @@
 </head>
 <body>
 <div class="login-screen" id="loginScreen">
-  <div class="login-card">
+  <div class="login-card login-card--loading" id="loginCard">
     <div class="login-spark"><span></span><span></span><span></span><span></span><span></span></div>
     <img class="login-logo" id="loginLogo" alt="Chuzomanía">
     <p class="login-sub">Elige tu acceso e ingresa tu PIN</p>
+    <p class="login-loading" id="loginLoading">Cargando tus accesos…</p>
     <div class="role-toggle" id="loginRoleToggle">
       <button class="role-btn active" data-role="admin" type="button">Administrador</button>
       <button class="role-btn" data-role="empleado" type="button">Colaborador</button>
@@ -1590,6 +1600,10 @@ function renderLoginRoleToggle(){
     const isActive = selectedLoginRole==='admin' ? b.dataset.role==='admin' : b.dataset.empId===selectedEmpleadoId;
     b.classList.toggle('active', isActive);
   });
+  // Ya hay datos reales (vinieron de Firebase) para saber qué colaboradores mostrar: se destapa
+  // el formulario de acceso, que estaba oculto detrás del aviso "Cargando tus accesos…".
+  const loginCard = document.getElementById('loginCard');
+  if(loginCard) loginCard.classList.remove('login-card--loading');
 }
 loginRoleToggle.addEventListener('click', e=>{
   const btn = e.target.closest('.role-btn');
@@ -1840,6 +1854,11 @@ function recomputeUidCounter(){
 function showLoadError(msg){
   const el = document.getElementById('loginError');
   if(el) el.textContent = msg;
+  // Si la carga falló de verdad, ya no tiene sentido seguir mostrando "Cargando…" — se oculta
+  // ese aviso para no confundir (loading + error a la vez), aunque el formulario de acceso
+  // sigue oculto porque sin datos no hay con qué validar ningún PIN.
+  const loading = document.getElementById('loginLoading');
+  if(loading) loading.style.display = 'none';
 }
 async function loadState(){
   let res = null;
@@ -3802,7 +3821,17 @@ document.getElementById('chatInput').addEventListener('keydown', e=>{
 
 /* ---------- Init ---------- */
 (async function init(){
+  // Si la conexión con Firebase (para saber qué colaboradores existen) está tardando más de lo
+  // normal, se actualiza el aviso de carga para que quede claro que sigue intentando y no que la
+  // página se congeló.
+  const slowLoadTimer = setTimeout(()=>{
+    const loading = document.getElementById('loginLoading');
+    if(loading && loading.style.display !== 'none'){
+      loading.textContent = 'Esto está tardando más de lo normal — revisa tu conexión a internet.';
+    }
+  }, 4000);
   await loadState();
+  clearTimeout(slowLoadTimer);
   if(!state){
     // loadState() ya mostró el motivo en pantalla (sin conexión, o datos ilegibles); no
     // seguimos inicializando la interfaz con un estado vacío que luego se podría guardar
