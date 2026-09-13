@@ -1098,6 +1098,7 @@
         </div>
         <button class="btn ghost small" id="resumenToggleDaysBtn" type="button">Elegir días sueltos ▾</button>
         <p class="section-sub" id="resumenFiltroInfo" style="margin:10px 0 0;"></p>
+        <button class="btn small" id="resumenShareImageBtn" type="button" style="margin-top:10px;" title="Genera una imagen con el costo de lo vendido y los pagos de cada día elegido, y los totales, para compartir">📤 Compartir imagen</button>
         <div id="resumenDaysList" class="resumen-days-list" style="display:none;"></div>
       </div>
 
@@ -3675,6 +3676,113 @@ document.getElementById('resumenDaysList').addEventListener('click', e=>{
     updateResumen();
   }
 });
+/* Dibuja una imagen PNG para compartir (p. ej. con una socia) con, por cada día elegido en el
+   filtro de arriba, el costo de lo vendido (precio costo) y los pagos de ese día — y al final
+   los totales: costo de lo vendido, pagos y compras (estos ya combinan todos los días elegidos,
+   igual que las tarjetas de Resumen). Reutiliza el mismo empaque de compartir/descargar que la
+   imagen de Ventas. */
+async function buildResumenShareImage(){
+  const dates = getResumenFilteredDates();
+  if(!dates.length) return;
+  const btn = document.getElementById('resumenShareImageBtn');
+  const textoOriginal = btn ? btn.textContent : '📤 Compartir imagen';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
+  try{
+    const dias = dates.slice().sort().map(d=>{
+      const costo = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
+      const pagos = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
+      return {date:d, costo, pagos};
+    });
+    const comprasTotal = dates.reduce((s,d)=> s + (state.compras[d]||[]).reduce((s2,r)=>s2+Number(r.canoViejo||0)+Number(r.monteria||0),0), 0);
+    const costoTotal = dias.reduce((s,d)=>s+d.costo, 0);
+    const pagosTotal = dias.reduce((s,d)=>s+d.pagos, 0);
+
+    const width = 680;
+    const padX = 32;
+    const headerHeight = 110;
+    const colHeaderHeight = 26;
+    const rowHeight = 40;
+    const footerHeight = 3*30 + 30;
+    const height = Math.round(headerHeight + colHeaderHeight + dias.length*rowHeight + footerHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#FBF3E2';
+    ctx.fillRect(0,0,width,height);
+
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 26px "Work Sans", sans-serif';
+    ctx.fillText('Chuzomanía', padX, 40);
+    ctx.fillStyle = '#5A4636';
+    ctx.font = '600 14px "Work Sans", sans-serif';
+    ctx.fillText(`Costo de lo vendido y pagos — ${dias.length} día${dias.length===1?'':'s'}`, padX, 62);
+    ctx.font = '400 12.5px "Work Sans", sans-serif';
+    ctx.fillText(document.getElementById('resumenFiltroInfo').textContent, padX, 82);
+    ctx.strokeStyle = 'rgba(42,27,16,.18)';
+    ctx.beginPath(); ctx.moveTo(padX, headerHeight-14); ctx.lineTo(width-padX, headerHeight-14); ctx.stroke();
+
+    const col2 = width - padX - 190;
+    const col3 = width - padX;
+    ctx.fillStyle = '#8A7A66';
+    ctx.font = '700 11.5px "Work Sans", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('DÍA', padX, headerHeight + 14);
+    ctx.textAlign = 'right';
+    ctx.fillText('COSTO DE LO VENDIDO', col2, headerHeight + 14);
+    ctx.fillText('PAGOS', col3, headerHeight + 14);
+
+    let cursorY = headerHeight + colHeaderHeight;
+    dias.forEach((d, i)=>{
+      const etiqueta = formatDateEs(d.date);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '600 14px "Work Sans", sans-serif';
+      ctx.fillText(etiqueta.charAt(0).toUpperCase()+etiqueta.slice(1), padX, cursorY + 24);
+      ctx.textAlign = 'right';
+      ctx.font = '700 14px "Work Sans", sans-serif';
+      ctx.fillStyle = '#946B3A';
+      ctx.fillText(fmt(d.costo), col2, cursorY + 24);
+      ctx.fillStyle = '#2E6F9E';
+      ctx.fillText(fmt(d.pagos), col3, cursorY + 24);
+      cursorY += rowHeight;
+      if(i < dias.length-1){
+        ctx.strokeStyle = 'rgba(42,27,16,.1)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY); ctx.lineTo(width-padX, cursorY); ctx.stroke();
+      }
+    });
+
+    ctx.strokeStyle = 'rgba(42,27,16,.25)';
+    ctx.beginPath(); ctx.moveTo(padX, cursorY+8); ctx.lineTo(width-padX, cursorY+8); ctx.stroke();
+    cursorY += 8;
+    const filas = [
+      ['Costo de lo vendido (total)', costoTotal, '#946B3A'],
+      ['Pagos totales', pagosTotal, '#2E6F9E'],
+      ['Compras totales', comprasTotal, '#5B8C3E'],
+    ];
+    filas.forEach(([label, valor, color])=>{
+      cursorY += 30;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '700 15px "Work Sans", sans-serif';
+      ctx.fillText(label, padX, cursorY);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = color;
+      ctx.font = '700 17px "Work Sans", sans-serif';
+      ctx.fillText(fmt(valor), width - padX, cursorY);
+    });
+    ctx.textAlign = 'left';
+
+    await compartirODescargarImagen(canvas, `resumen-${todayStr()}.png`, 'Resumen Chuzomanía', `Costo de lo vendido y pagos — ${dias.length} día${dias.length===1?'':'s'}`);
+  }catch(err){
+    alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
+  }finally{
+    if(btn){ btn.disabled = getResumenFilteredDates().length===0; btn.textContent = textoOriginal; }
+  }
+}
+document.getElementById('resumenShareImageBtn').addEventListener('click', buildResumenShareImage);
 let clearArmed = false, clearArmedTimer = null;
 document.getElementById('comprasClearBtn').addEventListener('click', function(){
   const list = ensureComprasDate(currentComprasDate);
@@ -3861,6 +3969,8 @@ function updateResumen(){
       infoEl.textContent = `Mostrando ${filteredDates.length} día${filteredDates.length===1?'':'s'}${rango}${excluidos}.`;
     }
   }
+  const shareImgBtn = document.getElementById('resumenShareImageBtn');
+  if(shareImgBtn) shareImgBtn.disabled = filteredDates.length===0;
   document.getElementById('r-ganancia-card').className = 'card ' + (ganancia>=0 ? 'green':'red');
   document.getElementById('r-compras-cv').textContent = fmt(comprasCV);
   document.getElementById('r-compras-mo').textContent = fmt(comprasMO);
