@@ -292,6 +292,27 @@
   .date-chip:hover{border-color:var(--ink);}
   .date-chip.active{background:var(--ember); border-color:var(--ember); color:#fff;}
 
+  /* Resumen: filtro de días de venta (rango + días sueltos) */
+  .resumen-filtro{
+    background:var(--paper2); border-radius:12px; padding:14px 14px 16px; margin-bottom:18px;
+  }
+  .resumen-filtro .date-bar{margin-bottom:8px;}
+  .resumen-filtro .date-field{background:#fff;}
+  .btn.ghost.small{padding:7px 11px; font-size:12.5px;}
+  .resumen-days-list{
+    display:flex; flex-direction:column; gap:6px; margin-top:10px;
+    max-height:260px; overflow-y:auto; padding-right:2px;
+  }
+  .resumen-days-actions{display:flex; gap:8px; margin-bottom:2px;}
+  .resumen-day-row{
+    display:flex; align-items:center; gap:10px; background:#fff; border-radius:8px; padding:8px 10px;
+    border:1px solid var(--line);
+  }
+  .resumen-day-row input[type="checkbox"]{width:17px; height:17px; flex-shrink:0; accent-color:var(--mustard); cursor:pointer;}
+  .resumen-day-row .rd-label{flex:1; font-size:13px; font-weight:600; color:var(--ink); text-transform:capitalize; cursor:pointer;}
+  .resumen-day-row .rd-amount{font-size:12.5px; color:var(--ink-soft); font-variant-numeric:tabular-nums;}
+  .resumen-days-empty{color:var(--ink-soft); font-size:13px; text-align:center; padding:14px 0;}
+
   .row-actions{display:flex; justify-content:flex-end; margin-top:14px;}
   .btn{
     font-family:'Work Sans',sans-serif; font-weight:600; font-size:13.5px;
@@ -994,14 +1015,27 @@
         <button class="btn ghost date-today" id="resumenToday">Hoy</button>
       </div>
       <div class="sheet" data-admin-only="1">
-      <p class="section-sub">Totales calculados en vivo a partir de las cuatro hojas (estos son de todo el tiempo; los que dicen "hoy" cambian con la fecha de arriba).</p>
+      <p class="section-sub">Totales calculados en vivo a partir de las cuatro hojas (los que dicen "hoy" cambian con la fecha de arriba).</p>
+
+      <div class="resumen-filtro">
+        <p class="section-sub" style="margin:0 0 8px;">Filtra los totales de abajo por días de venta — útil ya que no abren todos los días:</p>
+        <div class="date-bar" style="margin-bottom:8px;">
+          <label class="date-field"><span style="font-size:11px; color:var(--ink-soft); white-space:nowrap;">Desde</span><input type="date" id="resumenRangeStart"></label>
+          <label class="date-field"><span style="font-size:11px; color:var(--ink-soft); white-space:nowrap;">Hasta</span><input type="date" id="resumenRangeEnd"></label>
+          <button class="btn ghost date-today" id="resumenRangeClearBtn" type="button">Todo</button>
+        </div>
+        <button class="btn ghost small" id="resumenToggleDaysBtn" type="button">Elegir días sueltos ▾</button>
+        <p class="section-sub" id="resumenFiltroInfo" style="margin:10px 0 0;"></p>
+        <div id="resumenDaysList" class="resumen-days-list" style="display:none;"></div>
+      </div>
+
       <div class="cards">
-        <div class="card ember"><div class="lbl">Ventas totales (precio público)</div><div class="val" id="r-ventas">$0</div></div>
-        <div class="card c-costo"><div class="lbl">Costo de lo vendido (precio costo)</div><div class="val" id="r-costo-ventas">$0</div></div>
-        <div class="card c-compras"><div class="lbl">Compras totales</div><div class="val" id="r-compras">$0</div></div>
-        <div class="card c-pagos"><div class="lbl">Pagos totales</div><div class="val" id="r-pagos">$0</div></div>
+        <div class="card ember"><div class="lbl" id="lbl-ventas-totales">Ventas totales (precio público)</div><div class="val" id="r-ventas">$0</div></div>
+        <div class="card c-costo"><div class="lbl" id="lbl-costo-ventas-totales">Costo de lo vendido (precio costo)</div><div class="val" id="r-costo-ventas">$0</div></div>
+        <div class="card c-compras"><div class="lbl" id="lbl-compras-totales">Compras totales</div><div class="val" id="r-compras">$0</div></div>
+        <div class="card c-pagos"><div class="lbl" id="lbl-pagos-totales">Pagos totales</div><div class="val" id="r-pagos">$0</div></div>
         <div class="card c-pagos"><div class="lbl" id="lbl-pagos-hoy">Pagos de hoy</div><div class="val" id="r-pagos-hoy">$0</div></div>
-        <div class="card" id="r-ganancia-card"><div class="lbl">Ganancia estimada</div><div class="val" id="r-ganancia">$0</div></div>
+        <div class="card" id="r-ganancia-card"><div class="lbl" id="lbl-ganancia-totales">Ganancia estimada</div><div class="val" id="r-ganancia">$0</div></div>
         <div class="card" id="r-ganancia-neta-hoy-card"><div class="lbl" id="lbl-ganancia-neta-hoy">Ganancia neta de hoy (ventas − pagos de hoy)</div><div class="val" id="r-ganancia-neta-hoy">$0</div></div>
       </div>
       <div class="subgrid">
@@ -1313,6 +1347,11 @@ let currentComprasDate = todayStr();
 let currentPagosDate = todayStr();
 let currentVentasDate = todayStr();
 let currentResumenDate = todayStr();
+// Filtro de "Ventas totales" (y compras/pagos/ganancia asociados) por días de venta:
+// por defecto no hay filtro (se suman todos los días con actividad, igual que antes).
+let resumenRangeStart = '';
+let resumenRangeEnd = '';
+let resumenExcludedDays = new Set();
 let currentRole = null; // 'admin' | 'empleado'
 let currentEmployeeId = null;
 let currentEmployeeName = '';
@@ -3092,6 +3131,49 @@ document.getElementById('resumenToday').addEventListener('click', ()=>{
   currentResumenDate = todayStr();
   updateResumen();
 });
+document.getElementById('resumenRangeStart').addEventListener('change', e=>{
+  resumenRangeStart = e.target.value || '';
+  updateResumen();
+});
+document.getElementById('resumenRangeEnd').addEventListener('change', e=>{
+  resumenRangeEnd = e.target.value || '';
+  updateResumen();
+});
+document.getElementById('resumenRangeClearBtn').addEventListener('click', ()=>{
+  resumenRangeStart = ''; resumenRangeEnd = ''; resumenExcludedDays.clear();
+  document.getElementById('resumenRangeStart').value = '';
+  document.getElementById('resumenRangeEnd').value = '';
+  updateResumen();
+});
+document.getElementById('resumenToggleDaysBtn').addEventListener('click', function(){
+  const wrap = document.getElementById('resumenDaysList');
+  const showing = wrap.style.display !== 'none';
+  if(showing){
+    wrap.style.display = 'none';
+    this.textContent = 'Elegir días sueltos ▾';
+  }else{
+    wrap.style.display = '';
+    this.textContent = 'Elegir días sueltos ▴';
+    renderResumenDaysList();
+  }
+});
+document.getElementById('resumenDaysList').addEventListener('change', e=>{
+  const day = e.target.dataset.day;
+  if(!day) return;
+  if(e.target.checked) resumenExcludedDays.delete(day); else resumenExcludedDays.add(day);
+  updateResumen();
+});
+document.getElementById('resumenDaysList').addEventListener('click', e=>{
+  if(e.target.id==='resumenMarkAllBtn'){
+    resumenExcludedDays.clear();
+    renderResumenDaysList();
+    updateResumen();
+  }else if(e.target.id==='resumenUnmarkAllBtn'){
+    getResumenRangeDates().forEach(d=>resumenExcludedDays.add(d));
+    renderResumenDaysList();
+    updateResumen();
+  }
+});
 let clearArmed = false, clearArmedTimer = null;
 document.getElementById('comprasClearBtn').addEventListener('click', function(){
   const list = ensureComprasDate(currentComprasDate);
@@ -3165,20 +3247,65 @@ document.getElementById('insumosSearch').addEventListener('input', e=>{
 });
 
 /* ---------- Resumen ---------- */
+// Todas las fechas (de ventas, compras o pagos) que tienen algo registrado.
+function getResumenActivityDates(){
+  const set = new Set();
+  Object.keys(state.ventas||{}).forEach(d=>{ if((state.ventas[d]||[]).some(r=>r.cantidad)) set.add(d); });
+  Object.keys(state.compras||{}).forEach(d=>{ if((state.compras[d]||[]).some(r=>Number(r.canoViejo||0) || Number(r.monteria||0))) set.add(d); });
+  Object.keys(state.pagos||{}).forEach(d=>{ if((state.pagos[d]||[]).some(r=>Number(r.canoViejo||0) || Number(r.monteria||0))) set.add(d); });
+  return Array.from(set).sort();
+}
+// Fechas con actividad dentro del rango elegido (Desde/Hasta), sin aplicar aún los días desmarcados.
+function getResumenRangeDates(){
+  let dates = getResumenActivityDates();
+  if(resumenRangeStart) dates = dates.filter(d=>d>=resumenRangeStart);
+  if(resumenRangeEnd) dates = dates.filter(d=>d<=resumenRangeEnd);
+  return dates;
+}
+// Fechas que realmente se suman en los totales: rango menos los días desmarcados a mano.
+function getResumenFilteredDates(){
+  return getResumenRangeDates().filter(d=>!resumenExcludedDays.has(d));
+}
+function renderResumenDaysList(){
+  const wrap = document.getElementById('resumenDaysList');
+  if(!wrap) return;
+  const dates = getResumenRangeDates();
+  if(!dates.length){
+    wrap.innerHTML = '<div class="resumen-days-empty">No hay días con actividad en este rango.</div>';
+    return;
+  }
+  const header = `<div class="resumen-days-actions">
+      <button class="btn ghost small" type="button" id="resumenMarkAllBtn">Marcar todos</button>
+      <button class="btn ghost small" type="button" id="resumenUnmarkAllBtn">Desmarcar todos</button>
+    </div>`;
+  const rows = dates.map(d=>{
+    const monto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+    const checked = resumenExcludedDays.has(d) ? '' : 'checked';
+    return `<label class="resumen-day-row">
+        <input type="checkbox" data-day="${d}" ${checked}>
+        <span class="rd-label">${formatDateEs(d)}</span>
+        <span class="rd-amount">${fmt(monto)}</span>
+      </label>`;
+  }).join('');
+  wrap.innerHTML = header + rows;
+}
+
 function updateResumen(){
   const resumenDateInput = document.getElementById('resumenDate');
   if(resumenDateInput) resumenDateInput.value = currentResumenDate;
   const esHoyResumen = currentResumenDate === todayStr();
   const sufijoResumen = esHoyResumen ? 'hoy' : formatDateEs(currentResumenDate);
 
-  const allVentas = Object.values(state.ventas).flat();
+  const filteredDates = getResumenFilteredDates();
+  const isFiltrado = !!(resumenRangeStart || resumenRangeEnd || resumenExcludedDays.size);
+  const allVentas = filteredDates.flatMap(d=> state.ventas[d]||[]);
   const ventasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
   const costoVentasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
   const gananciaVentas = allVentas.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
-  const allCompras = Object.values(state.compras).flat();
+  const allCompras = filteredDates.flatMap(d=> state.compras[d]||[]);
   const comprasCV = allCompras.reduce((s,r)=>s+Number(r.canoViejo||0),0);
   const comprasMO = allCompras.reduce((s,r)=>s+Number(r.monteria||0),0);
-  const allPagos = Object.values(state.pagos).flat();
+  const allPagos = filteredDates.flatMap(d=> state.pagos[d]||[]);
   const pagosCV = allPagos.reduce((s,r)=>s+Number(r.canoViejo||0),0);
   const pagosMO = allPagos.reduce((s,r)=>s+Number(r.monteria||0),0);
   const comprasTotal = comprasCV + comprasMO;
@@ -3198,6 +3325,34 @@ function updateResumen(){
   document.getElementById('r-compras').textContent = fmt(comprasTotal);
   document.getElementById('r-pagos').textContent = fmt(pagosTotal);
   document.getElementById('r-ganancia').textContent = fmt(ganancia);
+  const sufijoTotales = isFiltrado ? ' (días elegidos)' : '';
+  const lblVentasTotales = document.getElementById('lbl-ventas-totales');
+  if(lblVentasTotales) lblVentasTotales.textContent = 'Ventas' + (isFiltrado ? ' (días elegidos)' : ' totales') + ' (precio público)';
+  const lblCostoVentasTotales = document.getElementById('lbl-costo-ventas-totales');
+  if(lblCostoVentasTotales) lblCostoVentasTotales.textContent = 'Costo de lo vendido' + sufijoTotales + ' (precio costo)';
+  const lblComprasTotales = document.getElementById('lbl-compras-totales');
+  if(lblComprasTotales) lblComprasTotales.textContent = 'Compras' + (isFiltrado ? ' (días elegidos)' : ' totales');
+  const lblPagosTotales = document.getElementById('lbl-pagos-totales');
+  if(lblPagosTotales) lblPagosTotales.textContent = 'Pagos' + (isFiltrado ? ' (días elegidos)' : ' totales');
+  const lblGananciaTotales = document.getElementById('lbl-ganancia-totales');
+  if(lblGananciaTotales) lblGananciaTotales.textContent = 'Ganancia estimada' + sufijoTotales;
+  const infoEl = document.getElementById('resumenFiltroInfo');
+  if(infoEl){
+    if(!isFiltrado){
+      infoEl.textContent = filteredDates.length
+        ? `Mostrando todos los días con actividad (${filteredDates.length}).`
+        : 'Aún no hay días con actividad registrada.';
+    }else{
+      let rango = '';
+      if(resumenRangeStart || resumenRangeEnd){
+        rango = ` entre ${resumenRangeStart ? formatDateEs(resumenRangeStart) : 'el inicio'} y ${resumenRangeEnd ? formatDateEs(resumenRangeEnd) : 'hoy'}`;
+      }
+      const excluidos = resumenExcludedDays.size
+        ? ` (${resumenExcludedDays.size} día${resumenExcludedDays.size===1?'':'s'} desmarcado${resumenExcludedDays.size===1?'':'s'})`
+        : '';
+      infoEl.textContent = `Mostrando ${filteredDates.length} día${filteredDates.length===1?'':'s'}${rango}${excluidos}.`;
+    }
+  }
   document.getElementById('r-ganancia-card').className = 'card ' + (ganancia>=0 ? 'green':'red');
   document.getElementById('r-compras-cv').textContent = fmt(comprasCV);
   document.getElementById('r-compras-mo').textContent = fmt(comprasMO);
@@ -3240,6 +3395,8 @@ function updateResumen(){
     if(rGananciaHoyCard) rGananciaHoyCard.className = 'card ' + (misGananciaHoy>=0 ? 'green':'red');
     renderResumenMisVentasHoy(misEntradas);
   }
+  const resumenDaysListEl = document.getElementById('resumenDaysList');
+  if(resumenDaysListEl && resumenDaysListEl.style.display !== 'none') renderResumenDaysList();
 }
 
 function renderResumenMisVentasHoy(misEntradas){
