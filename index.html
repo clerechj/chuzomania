@@ -309,8 +309,9 @@
     border:1px solid var(--line);
   }
   .resumen-day-row input[type="checkbox"]{width:17px; height:17px; flex-shrink:0; accent-color:var(--mustard); cursor:pointer;}
-  .resumen-day-row .rd-label{flex:1; font-size:13px; font-weight:600; color:var(--ink); text-transform:capitalize; cursor:pointer;}
-  .resumen-day-row .rd-amount{font-size:12.5px; color:var(--ink-soft); font-variant-numeric:tabular-nums;}
+  .resumen-day-row .rd-main{flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; cursor:pointer;}
+  .resumen-day-row .rd-label{font-size:13px; font-weight:600; color:var(--ink); text-transform:capitalize;}
+  .resumen-day-row .rd-breakdown{font-size:11.5px; color:var(--ink-soft); font-variant-numeric:tabular-nums;}
   .resumen-days-empty{color:var(--ink-soft); font-size:13px; text-align:center; padding:14px 0;}
 
   .row-actions{display:flex; justify-content:flex-end; margin-top:14px;}
@@ -520,7 +521,7 @@
      o desmarca — así el checkbox no "pelea" con ese clic y se desmarca por accidente al tocarlo. */
   .quick-item .qi-check{width:18px; height:18px; flex-shrink:0; accent-color:var(--c-ventas); pointer-events:none;}
 
-  .ventas-historial-actions{display:flex; gap:8px;}
+  .ventas-historial-actions{display:flex; gap:8px; flex-wrap:wrap;}
   .ventas-share-bar{
     display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
     background:rgba(226,72,27,.1); border-radius:10px; padding:10px 12px; margin-bottom:10px;
@@ -528,6 +529,10 @@
   .ventas-share-bar .vsb-info{display:flex; flex-direction:column; font-size:12px; color:var(--ember-dark);}
   .ventas-share-bar .vsb-info b{font-size:16px; color:var(--c-ventas); font-variant-numeric:tabular-nums;}
   .ventas-share-bar .vsb-actions{display:flex; gap:6px; flex-wrap:wrap;}
+  .ventas-dias-panel{
+    background:var(--paper2); border-radius:12px; padding:12px 12px 14px; margin-bottom:12px;
+  }
+  .ventas-dias-panel .resumen-days-list{max-height:280px;}
 
   /* ---- Login / roles ---- */
   .login-screen{
@@ -832,6 +837,7 @@
           <p class="section-sub" id="ventasHistorialLabel" style="margin:0;">Ventas registradas</p>
           <div class="ventas-historial-actions">
             <button class="btn ghost small" id="ventaSelectModeBtn" type="button">☑ Seleccionar</button>
+            <button class="btn ghost small" id="ventaSelectDiasBtn" type="button">📅 Seleccionar días</button>
             <button class="btn ghost small" id="ventaClearDayBtn" type="button">🧹 Limpiar</button>
           </div>
         </div>
@@ -846,6 +852,26 @@
             <button class="btn small" id="ventaShareImageBtn" type="button" title="Genera una imagen con las ventas marcadas para compartirla (por ejemplo por WhatsApp)">📤 Compartir imagen</button>
           </div>
         </div>
+
+        <!-- Seleccionar días completos de venta (no ventas sueltas) y compartir un resumen por día -->
+        <div class="ventas-dias-panel" id="ventaDiasPanel" style="display:none;">
+          <p class="section-sub" style="margin:0 0 8px;">Marca los días que quieres incluir — la imagen muestra lo vendido cada día y el total general:</p>
+          <div class="resumen-days-actions">
+            <button class="btn ghost small" type="button" id="ventaDiasMarkAllBtn">Marcar todos</button>
+            <button class="btn ghost small" type="button" id="ventaDiasUnmarkAllBtn">Desmarcar todos</button>
+          </div>
+          <div id="ventaDiasList" class="resumen-days-list"></div>
+          <div class="ventas-share-bar" id="ventaDiasShareBar">
+            <div class="vsb-info">
+              <span id="ventaDiasCount">0 días seleccionados</span>
+              <b id="ventaDiasTotal">$0</b>
+            </div>
+            <div class="vsb-actions">
+              <button class="btn small" id="ventaDiasShareImageBtn" type="button" title="Genera una imagen con el total vendido de cada día marcado">📤 Compartir imagen</button>
+            </div>
+          </div>
+        </div>
+
         <div class="quick-list" id="ventaQuickList"></div>
       </div>
 
@@ -1413,6 +1439,10 @@ function limpiarSeleccionVentas(){
   ventaSelectMode = false;
   ventaSelectedIds = new Set();
 }
+// Selección de DÍAS completos de venta (no ventas sueltas), para compartir un resumen de
+// "cuánto vendí ese día" por cada día marcado — independiente de la fecha que se esté viendo.
+let ventaDiasMode = false;
+let ventaDiasSeleccionados = new Set();
 function resetDraftOrder(){
   draftOrder = [];
   editingVentaId = null;
@@ -2671,6 +2701,13 @@ document.getElementById('ventaQuickList').addEventListener('click', e=>{
 document.getElementById('ventaSelectModeBtn').addEventListener('click', function(){
   ventaSelectMode = !ventaSelectMode;
   if(!ventaSelectMode) ventaSelectedIds = new Set();
+  if(ventaSelectMode && ventaDiasMode){
+    // el modo de marcar días completos no puede estar activo al mismo tiempo
+    ventaDiasMode = false;
+    ventaDiasSeleccionados = new Set();
+    document.getElementById('ventaDiasPanel').style.display = 'none';
+    document.getElementById('ventaSelectDiasBtn').textContent = '📅 Seleccionar días';
+  }
   this.textContent = ventaSelectMode ? '✕ Cancelar selección' : '☑ Seleccionar';
   renderVentaQuickList();
 });
@@ -2799,38 +2836,194 @@ async function buildVentasShareImage(){
     ctx.fillText(fmt(totalGeneral), width - padX, cursorY + 40);
     ctx.textAlign = 'left';
 
-    const blob = await new Promise(resolve=> canvas.toBlob(resolve, 'image/png'));
-    if(!blob) throw new Error('No se pudo generar la imagen');
-
-    const filename = `ventas-${currentVentasDate}.png`;
-    let compartido = false;
-    if(navigator.canShare){
-      try{
-        const file = new File([blob], filename, {type:'image/png'});
-        if(navigator.canShare({files:[file]})){
-          await navigator.share({files:[file], title:'Ventas Chuzomanía', text:'Ventas ' + formatDateEs(currentVentasDate)});
-          compartido = true;
-        }
-      }catch(err){
-        if(err && err.name==='AbortError') compartido = true; // el usuario canceló a propósito
-      }
-    }
-    if(!compartido){
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(()=> URL.revokeObjectURL(url), 4000);
-    }
+    await compartirODescargarImagen(canvas, `ventas-${currentVentasDate}.png`, 'Ventas Chuzomanía', 'Ventas ' + formatDateEs(currentVentasDate));
   }catch(err){
     alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
   }finally{
     if(btn){ btn.disabled = ventaSelectedIds.size===0; btn.textContent = textoOriginal; }
   }
 }
+/* Convierte un <canvas> ya dibujado en PNG y lo entrega: si el navegador puede compartir
+   archivos (navigator.share, típico en celulares), abre el selector nativo para mandarlo
+   directo por WhatsApp u otra app; si no (p. ej. en computador), descarga la imagen para que
+   se comparta manualmente. Se reutiliza tanto para la imagen de ventas sueltas como la de
+   días completos. */
+async function compartirODescargarImagen(canvas, filename, shareTitle, shareText){
+  const blob = await new Promise(resolve=> canvas.toBlob(resolve, 'image/png'));
+  if(!blob) throw new Error('No se pudo generar la imagen');
+  let compartido = false;
+  if(navigator.canShare){
+    try{
+      const file = new File([blob], filename, {type:'image/png'});
+      if(navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:shareTitle, text:shareText});
+        compartido = true;
+      }
+    }catch(err){
+      if(err && err.name==='AbortError') compartido = true; // el usuario canceló a propósito
+    }
+  }
+  if(!compartido){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 4000);
+  }
+}
+/* ---------- Seleccionar DÍAS completos de venta y compartir el resumen por día ---------- */
+function getVentasDiasConVenta(){
+  const isAdmin = currentRole==='admin';
+  const map = new Map(); // fecha -> total vendido ese día (según quién esté viendo la lista)
+  state.ventasLog.forEach(e=>{
+    if(!isAdmin && !(e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName)) return;
+    map.set(e.date, (map.get(e.date)||0) + ventaEntryTotal(e));
+  });
+  return Array.from(map.keys()).sort((a,b)=> b.localeCompare(a)).map(date=>({date, total:map.get(date)}));
+}
+function renderVentaDiasList(){
+  const wrap = document.getElementById('ventaDiasList');
+  if(!wrap) return;
+  const dias = getVentasDiasConVenta();
+  // si un día marcado ya no tiene ventas (se borraron), se descarta de la selección
+  const fechasValidas = new Set(dias.map(d=>d.date));
+  Array.from(ventaDiasSeleccionados).forEach(d=>{ if(!fechasValidas.has(d)) ventaDiasSeleccionados.delete(d); });
+  if(!dias.length){
+    wrap.innerHTML = '<div class="resumen-days-empty">Aún no hay ventas registradas.</div>';
+    updateVentaDiasBar();
+    return;
+  }
+  wrap.innerHTML = dias.map(({date, total})=>{
+    const checked = ventaDiasSeleccionados.has(date) ? 'checked' : '';
+    return `<label class="resumen-day-row">
+        <input type="checkbox" data-dia="${date}" ${checked}>
+        <div class="rd-main">
+          <span class="rd-label">${formatDateEs(date)}</span>
+          <span class="rd-breakdown">Vendido ${fmt(total)}</span>
+        </div>
+      </label>`;
+  }).join('');
+  updateVentaDiasBar();
+}
+function updateVentaDiasBar(){
+  const dias = getVentasDiasConVenta();
+  const totalPorDia = new Map(dias.map(d=>[d.date, d.total]));
+  const seleccionadas = Array.from(ventaDiasSeleccionados);
+  const total = seleccionadas.reduce((s,d)=> s + (totalPorDia.get(d)||0), 0);
+  document.getElementById('ventaDiasCount').textContent =
+    seleccionadas.length + (seleccionadas.length===1 ? ' día seleccionado' : ' días seleccionados');
+  document.getElementById('ventaDiasTotal').textContent = fmt(total);
+  const btn = document.getElementById('ventaDiasShareImageBtn');
+  if(btn) btn.disabled = seleccionadas.length===0;
+}
+document.getElementById('ventaDiasList').addEventListener('change', e=>{
+  const dia = e.target.dataset.dia;
+  if(!dia) return;
+  if(e.target.checked) ventaDiasSeleccionados.add(dia); else ventaDiasSeleccionados.delete(dia);
+  updateVentaDiasBar();
+});
+document.getElementById('ventaDiasMarkAllBtn').addEventListener('click', ()=>{
+  getVentasDiasConVenta().forEach(d=> ventaDiasSeleccionados.add(d.date));
+  renderVentaDiasList();
+});
+document.getElementById('ventaDiasUnmarkAllBtn').addEventListener('click', ()=>{
+  ventaDiasSeleccionados = new Set();
+  renderVentaDiasList();
+});
+document.getElementById('ventaSelectDiasBtn').addEventListener('click', function(){
+  ventaDiasMode = !ventaDiasMode;
+  if(ventaDiasMode){
+    // el modo de marcar ventas sueltas no puede estar activo al mismo tiempo
+    if(ventaSelectMode){
+      ventaSelectMode = false;
+      ventaSelectedIds = new Set();
+      document.getElementById('ventaSelectModeBtn').textContent = '☑ Seleccionar';
+      renderVentaQuickList();
+    }
+    renderVentaDiasList();
+  }else{
+    ventaDiasSeleccionados = new Set();
+  }
+  document.getElementById('ventaDiasPanel').style.display = ventaDiasMode ? '' : 'none';
+  this.textContent = ventaDiasMode ? '✕ Cancelar' : '📅 Seleccionar días';
+});
+/* Dibuja una imagen PNG con un renglón por cada día marcado (fecha + total vendido ese día) y
+   el total general al final — un resumen para compartir varios días de un vistazo, sin listar
+   venta por venta. */
+async function buildVentasDiasShareImage(){
+  const dias = getVentasDiasConVenta().filter(d=> ventaDiasSeleccionados.has(d.date)).sort((a,b)=> a.date.localeCompare(b.date));
+  if(!dias.length) return;
+  const btn = document.getElementById('ventaDiasShareImageBtn');
+  const textoOriginal = btn ? btn.textContent : '📤 Compartir imagen';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
+  try{
+    const width = 640;
+    const padX = 32;
+    const headerHeight = 88;
+    const footerHeight = 74;
+    const rowHeight = 46;
+    const height = Math.round(headerHeight + dias.length*rowHeight + footerHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#FBF3E2';
+    ctx.fillRect(0,0,width,height);
+
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 26px "Work Sans", sans-serif';
+    ctx.fillText('Chuzomanía', padX, 40);
+    ctx.fillStyle = '#5A4636';
+    ctx.font = '600 14px "Work Sans", sans-serif';
+    ctx.fillText(`Resumen de ventas — ${dias.length} día${dias.length===1?'':'s'}`, padX, 62);
+    ctx.strokeStyle = 'rgba(42,27,16,.18)';
+    ctx.beginPath(); ctx.moveTo(padX, 76); ctx.lineTo(width-padX, 76); ctx.stroke();
+
+    let cursorY = headerHeight;
+    dias.forEach((d, i)=>{
+      const etiqueta = formatDateEs(d.date);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '600 15px "Work Sans", sans-serif';
+      ctx.fillText(etiqueta.charAt(0).toUpperCase()+etiqueta.slice(1), padX, cursorY + 28);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#E2481B';
+      ctx.font = '700 16px "Work Sans", sans-serif';
+      ctx.fillText(fmt(d.total), width - padX, cursorY + 28);
+      ctx.textAlign = 'left';
+      cursorY += rowHeight;
+      if(i < dias.length-1){
+        ctx.strokeStyle = 'rgba(42,27,16,.1)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY); ctx.lineTo(width-padX, cursorY); ctx.stroke();
+      }
+    });
+
+    const totalGeneral = dias.reduce((s,d)=>s+d.total, 0);
+    ctx.strokeStyle = 'rgba(42,27,16,.25)';
+    ctx.beginPath(); ctx.moveTo(padX, cursorY+6); ctx.lineTo(width-padX, cursorY+6); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#241811';
+    ctx.font = '700 17px "Work Sans", sans-serif';
+    ctx.fillText('Total', padX, cursorY + 40);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 20px "Work Sans", sans-serif';
+    ctx.fillText(fmt(totalGeneral), width - padX, cursorY + 40);
+    ctx.textAlign = 'left';
+
+    await compartirODescargarImagen(canvas, `ventas-dias-${todayStr()}.png`, 'Ventas Chuzomanía', `Resumen de ventas — ${dias.length} día${dias.length===1?'':'s'}`);
+  }catch(err){
+    alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
+  }finally{
+    if(btn){ btn.disabled = ventaDiasSeleccionados.size===0; btn.textContent = textoOriginal; }
+  }
+}
+document.getElementById('ventaDiasShareImageBtn').addEventListener('click', buildVentasDiasShareImage);
 
 let ventaClearDayArmed = false, ventaClearDayArmedTimer = null;
 document.getElementById('ventaClearDayBtn').addEventListener('click', function(){
@@ -3587,12 +3780,19 @@ function renderResumenDaysList(){
       <button class="btn ghost small" type="button" id="resumenUnmarkAllBtn">Desmarcar todos</button>
     </div>`;
   const rows = dates.map(d=>{
-    const monto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+    // Se muestran las ventas, compras y pagos de ese día por separado (no solo las ventas) para
+    // poder elegir días según cualquiera de los tres — por ejemplo, para ver en qué días se
+    // compró más, aunque ese día no se haya vendido nada.
+    const ventasMonto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+    const comprasMonto = (state.compras[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
+    const pagosMonto = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
     const checked = resumenExcludedDays.has(d) ? '' : 'checked';
     return `<label class="resumen-day-row">
         <input type="checkbox" data-day="${d}" ${checked}>
-        <span class="rd-label">${formatDateEs(d)}</span>
-        <span class="rd-amount">${fmt(monto)}</span>
+        <div class="rd-main">
+          <span class="rd-label">${formatDateEs(d)}</span>
+          <span class="rd-breakdown">Ventas ${fmt(ventasMonto)} · Compras ${fmt(comprasMonto)} · Pagos ${fmt(pagosMonto)}</span>
+        </div>
       </label>`;
   }).join('');
   wrap.innerHTML = header + rows;
