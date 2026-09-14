@@ -3860,11 +3860,9 @@ async function buildResumenShareImage(){
   if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
   try{
     const dias = dates.slice().sort().map(d=>{
-      const filas = state.ventas[d]||[];
-      const costo = filas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
-      const publico = filas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+      const costo = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
       const pagos = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
-      return {date:d, costo, publico, pagos};
+      return {date:d, costo, pagos};
     });
     const comprasTotal = dates.reduce((s,d)=> s + (state.compras[d]||[]).reduce((s2,r)=>s2+Number(r.canoViejo||0)+Number(r.monteria||0),0), 0);
     const costoTotal = dias.reduce((s,d)=>s+d.costo, 0);
@@ -3874,8 +3872,8 @@ async function buildResumenShareImage(){
     // si da positivo, es lo que sobra.
     const saldo = costoTotal - pagosTotal - comprasTotal;
 
-    const width = 780;
-    const padX = 28;
+    const width = 680;
+    const padX = 32;
     const headerHeight = 110;
     const colHeaderHeight = 26;
     const rowHeight = 40;
@@ -3901,15 +3899,13 @@ async function buildResumenShareImage(){
     ctx.strokeStyle = 'rgba(42,27,16,.18)';
     ctx.beginPath(); ctx.moveTo(padX, headerHeight-14); ctx.lineTo(width-padX, headerHeight-14); ctx.stroke();
 
+    const col2 = width - padX - 190;
     const col3 = width - padX;
-    const col2 = col3 - 160;
-    const col1 = col2 - 150;
     ctx.fillStyle = '#8A7A66';
     ctx.font = '700 11.5px "Work Sans", sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText('DÍA', padX, headerHeight + 14);
     ctx.textAlign = 'right';
-    ctx.fillText('SALDO PÚBLICO', col1, headerHeight + 14);
     ctx.fillText('COSTO DE LO VENDIDO', col2, headerHeight + 14);
     ctx.fillText('PAGOS', col3, headerHeight + 14);
 
@@ -3922,8 +3918,6 @@ async function buildResumenShareImage(){
       ctx.fillText(etiqueta.charAt(0).toUpperCase()+etiqueta.slice(1), padX, cursorY + 24);
       ctx.textAlign = 'right';
       ctx.font = '700 14px "Work Sans", sans-serif';
-      ctx.fillStyle = '#8A7A66';
-      ctx.fillText(fmt(d.publico), col1, cursorY + 24);
       ctx.fillStyle = '#946B3A';
       ctx.fillText(fmt(d.costo), col2, cursorY + 24);
       ctx.fillStyle = '#2E6F9E';
