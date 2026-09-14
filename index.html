@@ -1018,7 +1018,7 @@
         </div>
 
         <div class="quick-total ventas-ref" id="pagosVentasRef">
-          <span id="pagosVentasRefLabel">Vendido hoy (todo el negocio)</span>
+          <span id="pagosVentasRefLabel">Vendido hoy · Caño Viejo</span>
           <b id="pagosVentasRefValue">$0</b>
         </div>
 
@@ -3307,14 +3307,15 @@ document.getElementById('pagosQuickList').addEventListener('click', e=>{
   scheduleSave('pagos');
 });
 
-/* Total vendido ese día, sumando TODAS las ventas sin importar quién las registró — sirve de
-   referencia en Pagos para saber cuánto pagarle a los colaboradores. No se separa por punto de
-   venta (Caño Viejo/Montería): a diferencia de Compras y Pagos, las ventas no se anotan por
-   punto — en la práctica casi todas quedan registradas como "Administrador", así que intentar
-   repartirlas por colaborador dejaba esta cifra en $0 casi siempre. */
-function ventasTotalEnFecha(dateStr){
+/* Total vendido ese día en un punto (Caño Viejo o Montería) — sirve de referencia en Pagos para
+   saber cuánto pagarle a los colaboradores de ese punto. Se calcula igual que "Ventas · Caño
+   Viejo/Montería" en Resumen: según con qué PIN de colaborador se registró cada venta
+   (puntoDeVentaLog). Lo que se venda con el PIN de Administrador no cuenta en ningún punto —
+   antes casi todas las ventas quedaban así, pero desde que cada colaborador entra con su propio
+   PIN esto ya refleja bien lo vendido en cada punto (ver puntoDeVentaLog). */
+function ventasEnPuntoYFecha(dateStr, punto){
   return (state.ventasLog||[])
-    .filter(v=> v.date===dateStr)
+    .filter(v=> v.date===dateStr && puntoDeVentaLog(v)===punto)
     .reduce((s,v)=>s+Number(v.total||0),0);
 }
 function renderQuickPagos(){
@@ -3330,8 +3331,8 @@ function renderQuickPagos(){
     ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
 
   const sufijoFecha = currentPagosDate===todayStr() ? 'hoy' : formatDateEs(currentPagosDate);
-  const ventasRef = ventasTotalEnFecha(currentPagosDate);
-  document.getElementById('pagosVentasRefLabel').textContent = 'Vendido ' + sufijoFecha + ' (todo el negocio)';
+  const ventasRef = ventasEnPuntoYFecha(currentPagosDate, punto);
+  document.getElementById('pagosVentasRefLabel').textContent = 'Vendido ' + sufijoFecha + ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
   document.getElementById('pagosVentasRefValue').textContent = fmt(ventasRef);
 
   const wrap = document.getElementById('pagosQuickList');
