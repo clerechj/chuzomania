@@ -709,7 +709,7 @@
           <span class="lbl">Compras</span>
         </button>
 
-        <button class="hextile" data-open="pagos" data-title="Pagos" data-admin-only="1">
+        <button class="hextile" data-open="pagos" data-title="Pagos" data-pagos-access="1">
           <span class="hex-shape-wrap">
             <svg class="bg" viewBox="0 0 220 195"><polygon points="60,10 160,10 210,96.6 160,183.2 60,183.2 10,96.6" fill="var(--c-pagos)" stroke="var(--c-pagos)" stroke-width="16"/></svg>
             <span class="icon-layer" style="position:absolute;inset:0;">
@@ -987,7 +987,7 @@
 
     <!-- PAGOS -->
     <section class="panel" id="panel-pagos">
-      <div class="sheet" data-admin-only="1">
+      <div class="sheet" data-pagos-access="1">
       <p class="section-sub">Pagos a colaboradores, arriendos, insumos (verduras, tenedores, etc.) y gastos varios por punto. Cada fecha tiene su propia hoja.</p>
 
       <div class="date-bar">
@@ -1007,12 +1007,12 @@
 
       <div class="seg-toggle" id="pagosViewToggle">
         <button class="seg-btn active" data-view="rapido" type="button">⚡ Registro rápido</button>
-        <button class="seg-btn" data-view="tabla" type="button">📋 Tabla completa</button>
+        <button class="seg-btn" data-view="tabla" type="button" data-admin-only="1">📋 Tabla completa</button>
       </div>
 
       <!-- Vista: Registro rápido -->
       <div id="pagos-view-rapido">
-        <div class="punto-toggle" id="pagosPuntoToggle">
+        <div class="punto-toggle" id="pagosPuntoToggle" data-admin-only="1">
           <button class="punto-btn" data-punto="canoViejo" type="button">Caño Viejo</button>
           <button class="punto-btn" data-punto="monteria" type="button">Montería</button>
         </div>
@@ -1667,6 +1667,7 @@ document.getElementById('profileBtn').addEventListener('click', ()=>openPanel('r
 document.querySelectorAll('.hextile').forEach(tile=>{
   tile.addEventListener('click', ()=>{
     if(tile.dataset.adminOnly==='1' && currentRole!=='admin') return;
+    if(tile.dataset.pagosAccess==='1' && !(currentRole==='admin' || esColaboradorCanoViejo())) return;
     openPanel(tile.dataset.open, tile.dataset.title);
   });
 });
@@ -1674,8 +1675,12 @@ document.querySelectorAll('.hextile').forEach(tile=>{
 /* ---------- Acceso / roles ---------- */
 function applyRoleUI(){
   const isAdmin = currentRole === 'admin';
+  // El menú de Pagos, aparte de Administrador, solo lo puede abrir el colaborador de Caño Viejo
+  // (Montería no lo ve) — y dentro de Pagos, Caño Viejo solo ve/registra su propia columna.
+  const puedeVerPagos = isAdmin || esColaboradorCanoViejo();
   resetDraftOrder();
   document.querySelectorAll('[data-admin-only]').forEach(el=>{ el.style.display = isAdmin ? '' : 'none'; });
+  document.querySelectorAll('[data-pagos-access]').forEach(el=>{ el.style.display = puedeVerPagos ? '' : 'none'; });
   document.querySelectorAll('[data-empleado-only]').forEach(el=>{ el.style.display = isAdmin ? 'none' : ''; });
   if(isAdmin){
     const a = document.getElementById('pinAdminInput');
@@ -1687,8 +1692,15 @@ function applyRoleUI(){
     // es la tabla de precios ("Editar productos y precios"), que sigue siendo solo del admin
     currentVentasDate = todayStr();
     state.uiPrefs.ventasView = 'rapido';
+    if(esColaboradorCanoViejo()){
+      // Nunca debe quedar viendo (ni agregando a) la columna de Montería en Pagos.
+      state.uiPrefs.pagosPunto = 'canoViejo';
+      state.uiPrefs.pagosView = 'rapido';
+      currentPagosDate = todayStr();
+    }
   }
   renderVentas();
+  renderPagos();
   updateResumen();
 }
 const _headerLogoImg = document.querySelector('.brand img');
