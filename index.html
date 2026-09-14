@@ -769,7 +769,7 @@
       <div class="seg-toggle" id="ventasViewToggle">
         <button class="seg-btn active" data-view="rapido" type="button">⚡ Registro rápido</button>
         <button class="seg-btn" data-view="historial" type="button">🧾 Ventas registradas</button>
-        <button class="seg-btn" data-view="tabla" type="button" data-admin-only="1">📋 Editar productos y precios</button>
+        <button class="seg-btn" data-view="tabla" type="button" data-productos-access="1">📋 Editar productos y precios</button>
       </div>
 
       <!-- Selector de fecha: compartido por las tres vistas de Ventas (registro rápido, historial
@@ -881,10 +881,21 @@
 
       <!-- Vista: Tabla completa -->
       <div id="ventas-view-tabla" style="display:none;">
-      <div id="tbl-ventas">
-        <div class="prod-cards"></div>
+      <div data-admin-only="1">
+        <p class="section-sub" style="margin:0 0 8px;">Catálogo compartido — lo usan Montería y Administrador (y Caño Viejo, para lo que no tenga precio propio abajo).</p>
+        <div id="tbl-ventas">
+          <div class="prod-cards"></div>
+        </div>
+        <div class="row-actions"><button class="btn secondary" data-add="ventas">+ Agregar producto</button></div>
       </div>
-      <div class="row-actions"><button class="btn secondary" data-add="ventas">+ Agregar producto</button></div>
+
+      <div data-productos-access="1" style="margin-top:20px;">
+        <p class="section-sub" style="margin:0 0 8px;">Productos de Caño Viejo (precios propios) — estos precios son solo de Caño Viejo y no cambian nada en Montería ni en el catálogo compartido.</p>
+        <div id="tbl-ventas-cv">
+          <div class="prod-cards"></div>
+        </div>
+        <div class="row-actions"><button class="btn secondary" data-add="ventasCanoViejo">+ Agregar producto</button></div>
+      </div>
       </div>
 
       <div class="save-note" id="save-ventas"></div>
@@ -1492,6 +1503,58 @@ function ensureVentasDate(dateStr){
   }
   return state.ventas[dateStr];
 }
+/* ---- Catálogo de productos y precios PROPIO de Caño Viejo ----
+   Caño Viejo cobra precios distintos a Montería/Administrador para el mismo producto, así que
+   comparten catálogo no funciona: cada punto necesita su propia lista de productos, cantidades
+   y precios, completamente independiente. state.ventasCanoViejo tiene la misma forma que
+   state.ventas pero es exclusivo de Caño Viejo (Administrador también puede verlo y editarlo,
+   para tener siempre "todos los productos", pero Montería nunca lo usa). */
+function ventasTemplateCanoViejo(){
+  const dates = Object.keys(state.ventasCanoViejo || {}).filter(d=>state.ventasCanoViejo[d] && state.ventasCanoViejo[d].length);
+  if(dates.length){
+    dates.sort((a,b)=> b.localeCompare(a));
+    return state.ventasCanoViejo[dates[0]].map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null}));
+  }
+  // Primera vez que se usa: arranca con una copia de lo que Caño Viejo ya podía ver en el
+  // catálogo compartido (para no perder lo ya configurado, p.ej. Cubanito/Alitas) — de aquí en
+  // adelante cada catálogo (y sus precios) evoluciona por separado.
+  const compartidas = Object.keys(state.ventas || {}).filter(d=>state.ventas[d] && state.ventas[d].length);
+  if(compartidas.length){
+    compartidas.sort((a,b)=> b.localeCompare(a));
+    return state.ventas[compartidas[0]]
+      .filter(r=> (r.visibilidad||'todos') !== 'ocultoCanoViejo')
+      .map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null}));
+  }
+  return seed.ventas.map(r=>({producto:r.producto, cantidad:0, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo||'efectivo', disponible:true, stock:null}));
+}
+function ensureVentasCanoViejoDate(dateStr){
+  if(!state.ventasCanoViejo) state.ventasCanoViejo = {};
+  if(!state.ventasCanoViejo[dateStr]){
+    state.ventasCanoViejo[dateStr] = ventasTemplateCanoViejo().map(r=>({id:'r'+(uidCounter++), producto:r.producto, cantidad:r.cantidad, valorUnidad:r.valorUnidad, precioPublico:r.precioPublico, ganancia:r.ganancia, metodo:r.metodo, disponible: r.disponible!==false, stock: r.stock ?? null}));
+  }
+  return state.ventasCanoViejo[dateStr];
+}
+// Catálogo que usa la sesión actual para VENDER: Caño Viejo siempre el suyo propio;
+// Administrador y Montería, el compartido de siempre.
+function ensureVentasActivasDate(dateStr){
+  return esColaboradorCanoViejo() ? ensureVentasCanoViejoDate(dateStr) : ensureVentasDate(dateStr);
+}
+// En qué catálogo vive la fila de una venta YA REGISTRADA (para poder editarla/borrarla bien más
+// adelante) — según quién la vendió en su momento (no según quién esté conectado ahora).
+function ensureVentasCatalogoDeEntrada(entry){
+  return puntoDeVentaLog(entry)==='canoViejo' ? ensureVentasCanoViejoDate(entry.date) : ensureVentasDate(entry.date);
+}
+// Catálogo que debe verse/usarse AHORA en el Registro rápido: si se está corrigiendo una venta ya
+// registrada, es el catálogo donde esa venta vive (para que los productos que se tocan en pantalla
+// sean los mismos que ya trae la corrección, sin importar quién esté corrigiendo); si no, es el de
+// la sesión actual (ver ensureVentasActivasDate).
+function catalogoEnUsoActual(){
+  if(editingVentaId){
+    const entry = state.ventasLog.find(x=>x.id===editingVentaId);
+    if(entry) return ensureVentasCatalogoDeEntrada(entry);
+  }
+  return ensureVentasActivasDate(currentVentasDate);
+}
 // ¿El colaborador actualmente en sesión es el de Caño Viejo? Se usa para filtrar qué productos
 // ve en Registro rápido (Administrador siempre ve todo; los demás colaboradores no ven "soloCanoViejo").
 function esColaboradorCanoViejo(){
@@ -1678,9 +1741,13 @@ function applyRoleUI(){
   // El menú de Pagos, aparte de Administrador, solo lo puede abrir el colaborador de Caño Viejo
   // (Montería no lo ve) — y dentro de Pagos, Caño Viejo solo ve/registra su propia columna.
   const puedeVerPagos = isAdmin || esColaboradorCanoViejo();
+  // "Editar productos y precios": Administrador ve el catálogo compartido; Caño Viejo, además,
+  // ve (y edita) su propia sección de productos con precios propios — Montería no ve esta pestaña.
+  const puedeVerProductos = isAdmin || esColaboradorCanoViejo();
   resetDraftOrder();
   document.querySelectorAll('[data-admin-only]').forEach(el=>{ el.style.display = isAdmin ? '' : 'none'; });
   document.querySelectorAll('[data-pagos-access]').forEach(el=>{ el.style.display = puedeVerPagos ? '' : 'none'; });
+  document.querySelectorAll('[data-productos-access]').forEach(el=>{ el.style.display = puedeVerProductos ? '' : 'none'; });
   document.querySelectorAll('[data-empleado-only]').forEach(el=>{ el.style.display = isAdmin ? 'none' : ''; });
   if(isAdmin){
     const a = document.getElementById('pinAdminInput');
@@ -1688,8 +1755,9 @@ function applyRoleUI(){
     renderEmpleadosList();
   }else{
     // el colaborador arranca en el registro rápido de hoy al iniciar sesión, pero desde ahí
-    // sí puede cambiar de fecha con el selector (igual que el administrador); lo que nunca ve
-    // es la tabla de precios ("Editar productos y precios"), que sigue siendo solo del admin
+    // sí puede cambiar de fecha con el selector (igual que el administrador); la tabla de precios
+    // compartida sigue siendo solo del admin, pero Caño Viejo sí puede entrar a "Editar productos
+    // y precios" para su propia sección (ver puedeVerProductos arriba)
     currentVentasDate = todayStr();
     state.uiPrefs.ventasView = 'rapido';
     if(esColaboradorCanoViejo()){
@@ -1858,7 +1926,7 @@ function snapshotForUndo(){
 function applyStateSnapshot(json){
   state = JSON.parse(json);
   for(const k in state){
-    if(k==='compras' || k==='ventas'){
+    if(k==='compras' || k==='ventas' || k==='ventasCanoViejo'){
       for(const d in state[k]){ state[k][d].forEach(r=>{ if(!r.id) r.id='r'+(uidCounter++); }); }
     }else if(Array.isArray(state[k])){
       state[k].forEach(r=>{ if(!r.id) r.id='r'+(uidCounter++); });
@@ -1878,7 +1946,7 @@ function applyStateSnapshot(json){
   scheduleSave('ventas');
 }
 /* Registra un paso de deshacer cada vez que el usuario termina de editar un campo (precio, cantidad, nombre, selector, etc.) */
-document.querySelectorAll('#tbl-ventas .prod-cards, #tbl-compras tbody, #tbl-pagos tbody, #tbl-insumos .insumos-cards').forEach(tbody=>{
+document.querySelectorAll('#tbl-ventas .prod-cards, #tbl-ventas-cv .prod-cards, #tbl-compras tbody, #tbl-pagos tbody, #tbl-insumos .insumos-cards').forEach(tbody=>{
   tbody.addEventListener('focusin', e=>{
     if(e.target.matches('input,select') && fieldEditSnapshot===null){
       fieldEditSnapshot = JSON.stringify(state);
@@ -2041,8 +2109,9 @@ async function loadState(){
       if(!state.compras) state.compras = {};
       if(!state.ventas) state.ventas = {};
       if(!state.pagos) state.pagos = {};
+      if(!state.ventasCanoViejo) state.ventasCanoViejo = {};
       for(const k in state){
-        if(k==='compras' || k==='ventas' || k==='pagos'){
+        if(k==='compras' || k==='ventas' || k==='pagos' || k==='ventasCanoViejo'){
           for(const d in state[k]){ state[k][d].forEach(r=>{ if(!r.id) r.id = 'r'+(uidCounter++); }); }
         }else if(Array.isArray(state[k])){
           state[k].forEach(r=>{ if(!r.id) r.id = 'r'+(uidCounter++); });
@@ -2091,6 +2160,7 @@ async function loadState(){
   state.ventas[todayStr()] = seed.ventas.map(r=>({id:'r'+(uidCounter++), ...r}));
   state.pagos = {};
   state.pagos[todayStr()] = seed.pagos.map(r=>({id:'r'+(uidCounter++), ...r}));
+  state.ventasCanoViejo = {};
   ensureUiPrefs();
   ensureSecurity();
   recomputeUidCounter();
@@ -2176,6 +2246,7 @@ function renderVentas(){
       </label>`;
     tbody.appendChild(card);
   });
+  renderVentasCanoViejoTabla();
   updateVentasFooter();
   renderVentasDateChips();
   syncVentasViewToggle();
@@ -2186,10 +2257,51 @@ function renderVentas(){
   renderVentaQuickList();
   renderInventario();
 }
+/* Tabla de "Editar productos y precios" propia de Caño Viejo — misma idea que la tabla compartida
+   de arriba, pero sin el selector "Quién lo ve" (no aplica: esta lista ya es exclusiva de Caño
+   Viejo) y guardando siempre en state.ventasCanoViejo en vez de en state.ventas. */
+function renderVentasCanoViejoTabla(){
+  const wrap = document.querySelector('#tbl-ventas-cv .prod-cards');
+  if(!wrap) return;
+  const list = ensureVentasCanoViejoDate(currentVentasDate);
+  wrap.innerHTML = '';
+  list.forEach(row=>{
+    const card = document.createElement('div');
+    card.className = 'prod-card';
+    card.dataset.id = row.id;
+    card.innerHTML = `
+      <div class="prod-card-top">
+        <button type="button" class="drag-handle" data-id="${row.id}" aria-label="Arrastrar para reordenar">
+          <svg width="13" height="18" viewBox="0 0 14 18" fill="currentColor"><circle cx="4" cy="3" r="1.6"/><circle cx="10" cy="3" r="1.6"/><circle cx="4" cy="9" r="1.6"/><circle cx="10" cy="9" r="1.6"/><circle cx="4" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/></svg>
+        </button>
+        <input type="text" class="prod-name-input" data-f="producto" value="${escapeHtml(row.producto)}">
+        <button class="del-btn" data-del="ventasCanoViejo">✕</button>
+      </div>
+      <div class="prod-card-prices">
+        <label class="prod-price-field">
+          <span class="ppf-label">Precio público</span>
+          <div class="money-field"><span class="money-sign">$</span><input type="text" inputmode="numeric" class="money-input" data-f="precioPublico" value="${fmtNum(row.precioPublico)}"></div>
+        </label>
+        <label class="prod-price-field">
+          <span class="ppf-label">Costo u.</span>
+          <div class="money-field"><span class="money-sign">$</span><input type="text" inputmode="numeric" class="money-input" data-f="valorUnidad" value="${fmtNum(row.valorUnidad)}"></div>
+        </label>
+        <label class="prod-price-field">
+          <span class="ppf-label">Gan/u</span>
+          <div class="money-field"><span class="money-sign">$</span><input type="text" inputmode="numeric" class="money-input" data-f="ganancia" value="${fmtNum(row.ganancia)}"></div>
+        </label>
+      </div>`;
+    wrap.appendChild(card);
+  });
+}
 function updateVentasFooter(){
   const list = ensureVentasDate(currentVentasDate);
-  const total = list.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoTotal = list.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
+  // El administrador ve "todo el negocio", así que su total combina el catálogo compartido con el
+  // propio de Caño Viejo (cada colaborador, en cambio, se filtra más abajo por su propio PIN vía
+  // ventasLog, sin importar en qué catálogo haya quedado registrada la venta).
+  const listCV = ensureVentasCanoViejoDate(currentVentasDate);
+  const total = list.reduce((s,r)=>s+r.cantidad*r.precioPublico,0) + listCV.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+  const costoTotal = list.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0) + listCV.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
   const ftEl = document.getElementById('ft-ventas');
   if(ftEl) ftEl.textContent = fmt(total);
 
@@ -2220,12 +2332,15 @@ function renderVentasDateChips(){
   const isAdmin = currentRole==='admin';
   let dates, totalPorFecha;
   if(isAdmin){
-    // el administrador sí ve el total del día completo (de todos los colaboradores juntos)
-    dates = Object.keys(state.ventas)
-      .filter(d=> state.ventas[d].some(r=>r.cantidad))
+    // el administrador sí ve el total del día completo (de todos los colaboradores juntos) —
+    // incluyendo tanto el catálogo compartido como el catálogo propio de Caño Viejo
+    const fechasCompartidas = Object.keys(state.ventas).filter(d=> state.ventas[d].some(r=>r.cantidad));
+    const fechasCV = Object.keys(state.ventasCanoViejo||{}).filter(d=> (state.ventasCanoViejo[d]||[]).some(r=>r.cantidad));
+    dates = Array.from(new Set([...fechasCompartidas, ...fechasCV]))
       .sort((a,b)=> b.localeCompare(a))
       .slice(0,10);
-    totalPorFecha = d => state.ventas[d].reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+    totalPorFecha = d => (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0)
+      + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.precioPublico,0) : 0);
   }else{
     // cada colaborador ve solo los días en que ÉL vendió, y el total de SUS propias ventas ese
     // día — no el total del día completo, que podría incluir ventas de otros colaboradores y
@@ -2315,7 +2430,7 @@ document.getElementById('ventaMetodoToggle').addEventListener('click', e=>{
 function metodoLabel(m){ return m==='nequi' ? '🟣 Nequi' : m==='rappi' ? '🟠 Rappi' : '💵 Efectivo'; }
 function renderVentaQuickGrid(filter){
   const grid = document.getElementById('ventaQuickGrid');
-  const list = ensureVentasDate(currentVentasDate);
+  const list = catalogoEnUsoActual();
   const f = (filter||'').trim().toLowerCase();
   const items = list.filter(r=> r.producto && (!f || r.producto.toLowerCase().includes(f)) && productoVisibleParaSesion(r));
   if(!items.length){
@@ -2347,7 +2462,7 @@ document.getElementById('ventaQuickGrid').addEventListener('click', e=>{
     setTimeout(()=> btn.classList.remove('agotado-shake'), 400);
     return;
   }
-  const list = ensureVentasDate(currentVentasDate);
+  const list = catalogoEnUsoActual();
   const row = list.find(r=>r.id===btn.dataset.id);
   if(!row) return;
   let item = draftOrder.find(d=>d.rowId===row.id);
@@ -2562,7 +2677,7 @@ document.getElementById('ventaOpenTabs').addEventListener('click', e=>{
    y le devuelve el descuento a las existencias), sin todavía tocar el registro (ventasLog) de esa
    venta — eso lo hace quien llama, según si la va a reemplazar (editar) o a eliminar del todo. */
 function revertVentaEntryEffect(entry){
-  const list = ensureVentasDate(entry.date);
+  const list = ensureVentasCatalogoDeEntrada(entry);
   const itemsAfectados = Array.isArray(entry.items)
     ? entry.items
     : [{rowId:entry.rowId, cantidad:(entry.cantidad||1)}];
@@ -2583,14 +2698,20 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   // Si esto es la corrección de una venta ya registrada, primero se revierte esa venta original
   // (como si se hubiera borrado) y se saca del historial — enseguida se registra la versión
   // corregida como si fuera nueva, con todas sus cantidades y su efecto en existencias ya al día.
+  let entradaOriginal = null;
   if(editingVentaId){
     const idx = state.ventasLog.findIndex(x=>x.id===editingVentaId);
     if(idx!==-1){
-      revertVentaEntryEffect(state.ventasLog[idx]);
+      entradaOriginal = state.ventasLog[idx];
+      revertVentaEntryEffect(entradaOriginal);
       state.ventasLog.splice(idx,1);
     }
   }
-  const list = ensureVentasDate(currentVentasDate);
+  // Si es la corrección de una venta ya registrada, se usa el MISMO catálogo en el que esa venta
+  // había quedado (según quién la vendió originalmente) — así, por ejemplo, si Administrador
+  // corrige una venta de Caño Viejo, la corrección sigue afectando el catálogo propio de Caño
+  // Viejo (y no el compartido, donde esos productos ni siquiera existirían).
+  const list = entradaOriginal ? ensureVentasCatalogoDeEntrada(entradaOriginal) : ensureVentasActivasDate(currentVentasDate);
   const metodo = state.uiPrefs.ventaMetodo;
   const cliente = document.getElementById('ventaClienteInput').value.trim();
   const items = [];
@@ -3121,6 +3242,9 @@ document.getElementById('ventaClearDayBtn').addEventListener('click', function()
   this.classList.remove('danger-armed');
   snapshotForUndo();
   list.forEach(r=>{ r.cantidad = 0; });
+  // También se limpian las cantidades del catálogo propio de Caño Viejo para ese día — si no,
+  // quedarían cantidades "vendidas" sin ninguna venta real detrás en el historial.
+  ensureVentasCanoViejoDate(currentVentasDate).forEach(r=>{ r.cantidad = 0; });
   state.ventasLog = state.ventasLog.filter(e=>e.date!==currentVentasDate);
   renderVentas();
   scheduleSave('ventas');
@@ -3886,7 +4010,8 @@ async function buildResumenShareImage(){
   if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
   try{
     const dias = dates.slice().sort().map(d=>{
-      const costo = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
+      const costo = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0)
+        + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.valorUnidad,0) : 0);
       const pagos = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
       return {date:d, costo, pagos};
     });
@@ -4067,6 +4192,7 @@ document.getElementById('insumosSearch').addEventListener('input', e=>{
 function getResumenActivityDates(){
   const set = new Set();
   Object.keys(state.ventas||{}).forEach(d=>{ if((state.ventas[d]||[]).some(r=>r.cantidad)) set.add(d); });
+  Object.keys(state.ventasCanoViejo||{}).forEach(d=>{ if((state.ventasCanoViejo[d]||[]).some(r=>r.cantidad)) set.add(d); });
   Object.keys(state.compras||{}).forEach(d=>{ if((state.compras[d]||[]).some(r=>Number(r.canoViejo||0) || Number(r.monteria||0))) set.add(d); });
   Object.keys(state.pagos||{}).forEach(d=>{ if((state.pagos[d]||[]).some(r=>Number(r.canoViejo||0) || Number(r.monteria||0))) set.add(d); });
   return Array.from(set).sort();
@@ -4098,7 +4224,8 @@ function renderResumenDaysList(){
     // Se muestran las ventas, compras y pagos de ese día por separado (no solo las ventas) para
     // poder elegir días según cualquiera de los tres — por ejemplo, para ver en qué días se
     // compró más, aunque ese día no se haya vendido nada.
-    const ventasMonto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+    const ventasMonto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0)
+      + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.precioPublico,0) : 0);
     const comprasMonto = (state.compras[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
     const pagosMonto = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
     const checked = resumenExcludedDays.has(d) ? '' : 'checked';
@@ -4121,7 +4248,7 @@ function updateResumen(){
 
   const filteredDates = getResumenFilteredDates();
   const isFiltrado = !!(resumenRangeStart || resumenRangeEnd || resumenExcludedDays.size);
-  const allVentas = filteredDates.flatMap(d=> state.ventas[d]||[]);
+  const allVentas = filteredDates.flatMap(d=> [...(state.ventas[d]||[]), ...((state.ventasCanoViejo&&state.ventasCanoViejo[d])||[])]);
   const ventasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
   const costoVentasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
   const gananciaVentas = allVentas.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
@@ -4142,10 +4269,13 @@ function updateResumen(){
   const comprasTotal = comprasCV + comprasMO;
   const pagosTotal = pagosCV + pagosMO;
   const ganancia = gananciaVentas - comprasTotal - pagosTotal;
-  // "de hoy" en realidad son "de la fecha elegida arriba en Resumen" (por defecto, hoy)
-  const ventasHoy = ensureVentasDate(currentResumenDate).reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoVentasHoy = ensureVentasDate(currentResumenDate).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
-  const gananciaHoy = ensureVentasDate(currentResumenDate).reduce((s,r)=>s+r.cantidad*r.ganancia,0);
+  // "de hoy" en realidad son "de la fecha elegida arriba en Resumen" (por defecto, hoy) — se
+  // combina el catálogo compartido con el propio de Caño Viejo para que Resumen (que lo ve
+  // Administrador) siempre refleje TODO el negocio, no solo Montería/Administrador.
+  const ventasHoyLista = [...ensureVentasDate(currentResumenDate), ...ensureVentasCanoViejoDate(currentResumenDate)];
+  const ventasHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
+  const costoVentasHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
+  const gananciaHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
   const comprasHoy = ensureComprasDate(currentResumenDate).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
   const pagosHoy = ensurePagosDate(currentResumenDate).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
   const gananciaNetaHoy = gananciaHoy - comprasHoy - pagosHoy;
@@ -4353,6 +4483,88 @@ document.addEventListener('pointerup', e=>{
   }
 });
 
+/* Productos de Caño Viejo (precios propios) — misma lógica que la tabla compartida de arriba,
+   pero sobre state.ventasCanoViejo, y sin el selector "Quién lo ve". */
+document.querySelector('#tbl-ventas-cv .prod-cards').addEventListener('input', e=>{
+  const f = e.target.dataset.f; if(!f) return;
+  const card = e.target.closest('.prod-card'); const row = ensureVentasCanoViejoDate(currentVentasDate).find(r=>r.id===card.dataset.id);
+  if(!row) return;
+  if(e.target.classList.contains('money-input')){
+    row[f] = parseMoneyValue(e.target.value);
+    formatMoneyElementLive(e.target);
+  }else{
+    row[f] = e.target.value;
+  }
+  if(f==='precioPublico'){
+    updateVentasFooter();
+  }
+  if((f==='producto' || f==='precioPublico') && esColaboradorCanoViejo()){
+    const searchEl = document.getElementById('ventaQuickSearch');
+    if(searchEl) renderVentaQuickGrid(searchEl.value);
+  }
+  scheduleSave('ventas');
+});
+document.querySelector('#tbl-ventas-cv .prod-cards').addEventListener('click', e=>{
+  if(e.target.dataset.del==='ventasCanoViejo'){
+    snapshotForUndo();
+    const card = e.target.closest('.prod-card');
+    state.ventasCanoViejo[currentVentasDate] = ensureVentasCanoViejoDate(currentVentasDate).filter(r=>r.id!==card.dataset.id);
+    renderVentasCanoViejoTabla();
+    if(esColaboradorCanoViejo()) renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
+    updateVentasFooter();
+    scheduleSave('ventas');
+    return;
+  }
+});
+let dragInfoCV = null;
+document.querySelector('#tbl-ventas-cv .prod-cards').addEventListener('pointerdown', e=>{
+  const handle = e.target.closest('.drag-handle');
+  if(!handle) return;
+  const card = handle.closest('.prod-card');
+  const container = card.parentElement;
+  e.preventDefault();
+  dragInfoCV = {
+    card, container,
+    handleId: handle.dataset.id,
+    startY: e.clientY,
+    cardHeight: card.getBoundingClientRect().height + 10,
+    pointerId: e.pointerId
+  };
+  card.classList.add('dragging');
+  card.setPointerCapture(e.pointerId);
+});
+document.addEventListener('pointermove', e=>{
+  if(!dragInfoCV || e.pointerId!==dragInfoCV.pointerId) return;
+  const dy = e.clientY - dragInfoCV.startY;
+  dragInfoCV.card.style.transform = `translateY(${dy}px)`;
+  if(Math.abs(dy) > dragInfoCV.cardHeight/2){
+    const sibling = dy > 0 ? dragInfoCV.card.nextElementSibling : dragInfoCV.card.previousElementSibling;
+    if(sibling){
+      if(dy > 0) sibling.after(dragInfoCV.card); else sibling.before(dragInfoCV.card);
+      dragInfoCV.startY = e.clientY;
+      dragInfoCV.card.style.transform = 'translateY(0px)';
+    }
+  }
+});
+document.addEventListener('pointerup', e=>{
+  if(!dragInfoCV || e.pointerId!==dragInfoCV.pointerId) return;
+  const { card, container } = dragInfoCV;
+  card.classList.remove('dragging');
+  card.style.transform = '';
+  dragInfoCV = null;
+  const newOrderIds = Array.from(container.children).map(c=>c.dataset.id);
+  const list = ensureVentasCanoViejoDate(currentVentasDate);
+  const originalOrderIds = list.map(r=>r.id);
+  const changed = newOrderIds.some((id,i)=> id!==originalOrderIds[i]);
+  if(changed){
+    snapshotForUndo();
+    const byId = new Map(list.map(r=>[r.id, r]));
+    state.ventasCanoViejo[currentVentasDate] = newOrderIds.map(id=>byId.get(id));
+    renderVentasCanoViejoTabla();
+    scheduleSave('ventas');
+  }
+});
+
 /* Pagos (anclados a la fecha activa) */
 (function(){
   const tbody = document.querySelector('#tbl-pagos tbody');
@@ -4435,10 +4647,13 @@ document.querySelectorAll('[data-add]').forEach(btn=>{
     snapshotForUndo();
     const t = btn.dataset.add;
     if(t==='ventas'){ ensureVentasDate(currentVentasDate).push({id:'r'+(uidCounter++), producto:'', cantidad:0, precioPublico:0, valorUnidad:0, ganancia:0, metodo:'efectivo', disponible:true, stock:null, visibilidad:'todos'}); renderVentas(); }
+    if(t==='ventasCanoViejo'){ ensureVentasCanoViejoDate(currentVentasDate).push({id:'r'+(uidCounter++), producto:'', cantidad:0, precioPublico:0, valorUnidad:0, ganancia:0, metodo:'efectivo', disponible:true, stock:null}); renderVentasCanoViejoTabla(); if(esColaboradorCanoViejo()) renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value); updateVentasFooter(); }
     if(t==='compras'){ ensureComprasDate(currentComprasDate).push({id:'r'+(uidCounter++), producto:'', canoViejo:0, monteria:0}); renderCompras(); }
     if(t==='pagos'){ ensurePagosDate(currentPagosDate).push({id:'r'+(uidCounter++), pago:'', canoViejo:0, monteria:0}); renderPagos(); }
     if(t==='insumos'){ state.insumos.push({id:'r'+(uidCounter++), producto:'', valorInsumo:0, valorUnidad:0, ganancia:0}); renderInsumos(); }
-    scheduleSave(t);
+    // "ventasCanoViejo" vive en el mismo panel/nota de guardado que "ventas" (no tiene su propio
+    // save-ventasCanoViejo en el HTML), así que se guarda bajo el nombre 'ventas'.
+    scheduleSave(t==='ventasCanoViejo' ? 'ventas' : t);
   });
 });
 
