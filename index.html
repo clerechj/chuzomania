@@ -1176,6 +1176,22 @@
         <div class="card c-costo"><div class="lbl" id="lbl-costo-ventas-hoy">Costo de lo vendido hoy</div><div class="val" id="r-costo-ventas-hoy">$0</div></div>
         <div class="card" id="r-ganancia-hoy-card"><div class="lbl" id="lbl-ganancia-hoy">Ganancia de hoy</div><div class="val" id="r-ganancia-hoy">$0</div></div>
       </div>
+
+      <!-- Solo Caño Viejo: la misma opción de "elegir días y compartir imagen" que tiene
+           Administrador, pero con los números propios de Caño Viejo (Montería no la ve). -->
+      <div class="resumen-filtro" data-cv-resumen-access="1" style="margin-top:18px; display:none;">
+        <p class="section-sub" style="margin:0 0 8px;">Elige tus días de venta y comparte tu propio costo de lo vendido, pagos y compras (sin mezclar Montería):</p>
+        <div class="date-bar" style="margin-bottom:8px;">
+          <label class="date-field"><span style="font-size:11px; color:var(--ink-soft); white-space:nowrap;">Desde</span><input type="date" id="resumenRangeStartCv"></label>
+          <label class="date-field"><span style="font-size:11px; color:var(--ink-soft); white-space:nowrap;">Hasta</span><input type="date" id="resumenRangeEndCv"></label>
+          <button class="btn ghost date-today" id="resumenRangeClearBtnCv" type="button">Todo</button>
+        </div>
+        <button class="btn ghost small" id="resumenToggleDaysBtnCv" type="button">Elegir días sueltos ▾</button>
+        <p class="section-sub" id="resumenFiltroInfoCv" style="margin:10px 0 0;"></p>
+        <button class="btn small" id="resumenShareImageBtnCv" type="button" style="margin-top:10px;" title="Genera una imagen con tu costo de lo vendido, tus pagos y tus compras de cada día elegido, y los totales, para compartir">📤 Compartir imagen</button>
+        <div id="resumenDaysListCv" class="resumen-days-list" style="display:none;"></div>
+      </div>
+
       <p class="section-sub" style="margin-top:14px;" id="resumen-mis-ventas-count"></p>
       <div id="resumen-mis-ventas-lista"></div>
       </div>
@@ -1461,6 +1477,12 @@ let currentResumenDate = todayStr();
 let resumenRangeStart = '';
 let resumenRangeEnd = '';
 let resumenExcludedDays = new Set();
+// Mismo filtro (rango de fechas + días sueltos desmarcados), pero para la versión de "Compartir
+// imagen" propia de Caño Viejo dentro de su Resumen — separado del filtro de Administrador para
+// que elegir días en uno no afecte al otro.
+let resumenRangeStartCv = '';
+let resumenRangeEndCv = '';
+let resumenExcludedDaysCv = new Set();
 let currentRole = null; // 'admin' | 'empleado'
 let currentEmployeeId = null;
 let currentEmployeeName = '';
@@ -1744,11 +1766,15 @@ function applyRoleUI(){
   // "Editar productos y precios": Administrador ve el catálogo compartido; Caño Viejo, además,
   // ve (y edita) su propia sección de productos con precios propios — Montería no ve esta pestaña.
   const puedeVerProductos = isAdmin || esColaboradorCanoViejo();
+  // "Elegir días y compartir imagen" en Resumen: además de Administrador (con todo el negocio),
+  // Caño Viejo tiene su propia versión con SOLO sus números — Montería no la ve.
+  const esCV = esColaboradorCanoViejo();
   resetDraftOrder();
   document.querySelectorAll('[data-admin-only]').forEach(el=>{ el.style.display = isAdmin ? '' : 'none'; });
   document.querySelectorAll('[data-pagos-access]').forEach(el=>{ el.style.display = puedeVerPagos ? '' : 'none'; });
   document.querySelectorAll('[data-productos-access]').forEach(el=>{ el.style.display = puedeVerProductos ? '' : 'none'; });
   document.querySelectorAll('[data-empleado-only]').forEach(el=>{ el.style.display = isAdmin ? 'none' : ''; });
+  document.querySelectorAll('[data-cv-resumen-access]').forEach(el=>{ el.style.display = esCV ? '' : 'none'; });
   if(isAdmin){
     const a = document.getElementById('pinAdminInput');
     if(a) a.value = state.security.adminPin;
@@ -2771,6 +2797,16 @@ function renderClientesResumen(){
    para no tener la misma lógica escrita dos veces. */
 function ventaEntryTotal(e){
   return Array.isArray(e.items) ? Number(e.total||0) : (Number(e.cantidad)||1) * Number(e.valorUnidad||0);
+}
+// Costo (precio de costo, no público) de una venta ya registrada — usa el valorUnidad que quedó
+// guardado en cada item AL MOMENTO de esa venta, así que sigue siendo exacto aunque el precio de
+// ese producto en el catálogo haya cambiado después. Se usa para armar "costo de lo vendido" por
+// colaborador/punto a partir de ventasLog, en vez de sumar cantidades del catálogo (que ya no
+// alcanza por sí solo ahora que Caño Viejo tiene su propio catálogo con sus propios precios).
+function ventaEntryCosto(e){
+  return Array.isArray(e.items)
+    ? e.items.reduce((s,i)=> s + (Number(i.cantidad)||0) * Number(i.valorUnidad||0), 0)
+    : (Number(e.cantidad)||1) * Number(e.valorUnidad||0);
 }
 function ventaEntryResumen(e){
   if(Array.isArray(e.items)) return e.items.map(i=> (i.cantidad>1 ? i.cantidad+'× ' : '') + i.producto).join(', ');
@@ -4240,6 +4276,235 @@ function renderResumenDaysList(){
   wrap.innerHTML = header + rows;
 }
 
+/* ---- Misma idea de arriba (rango + días sueltos + "Compartir imagen"), pero SOLO con los
+   números propios de Caño Viejo — para que Caño Viejo pueda compartir su propio resumen (p. ej.
+   con su socia) sin mezclar los de Montería. "Ventas"/"costo de lo vendido" salen de ventasLog
+   filtrado por punto (ver puntoDeVentaLog), y compras/pagos de su propia columna "canoViejo". */
+function getResumenActivityDatesCV(){
+  const set = new Set();
+  (state.ventasLog||[]).forEach(e=>{ if(puntoDeVentaLog(e)==='canoViejo') set.add(e.date); });
+  Object.keys(state.compras||{}).forEach(d=>{ if((state.compras[d]||[]).some(r=>Number(r.canoViejo||0))) set.add(d); });
+  Object.keys(state.pagos||{}).forEach(d=>{ if((state.pagos[d]||[]).some(r=>Number(r.canoViejo||0))) set.add(d); });
+  return Array.from(set).sort();
+}
+function getResumenRangeDatesCV(){
+  let dates = getResumenActivityDatesCV();
+  if(resumenRangeStartCv) dates = dates.filter(d=>d>=resumenRangeStartCv);
+  if(resumenRangeEndCv) dates = dates.filter(d=>d<=resumenRangeEndCv);
+  return dates;
+}
+function getResumenFilteredDatesCV(){
+  return getResumenRangeDatesCV().filter(d=>!resumenExcludedDaysCv.has(d));
+}
+function renderResumenDaysListCV(){
+  const wrap = document.getElementById('resumenDaysListCv');
+  if(!wrap) return;
+  const dates = getResumenRangeDatesCV();
+  if(!dates.length){
+    wrap.innerHTML = '<div class="resumen-days-empty">No hay días con actividad en este rango.</div>';
+    return;
+  }
+  const header = `<div class="resumen-days-actions">
+      <button class="btn ghost small" type="button" id="resumenMarkAllBtnCv">Marcar todos</button>
+      <button class="btn ghost small" type="button" id="resumenUnmarkAllBtnCv">Desmarcar todos</button>
+    </div>`;
+  const rows = dates.map(d=>{
+    const misEntradas = (state.ventasLog||[]).filter(e=> e.date===d && puntoDeVentaLog(e)==='canoViejo');
+    const ventasMonto = misEntradas.reduce((s,e)=>s+ventaEntryTotal(e),0);
+    const comprasMonto = (state.compras[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0),0);
+    const pagosMonto = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0),0);
+    const checked = resumenExcludedDaysCv.has(d) ? '' : 'checked';
+    return `<label class="resumen-day-row">
+        <input type="checkbox" data-day="${d}" ${checked}>
+        <div class="rd-main">
+          <span class="rd-label">${formatDateEs(d)}</span>
+          <span class="rd-breakdown">Ventas ${fmt(ventasMonto)} · Compras ${fmt(comprasMonto)} · Pagos ${fmt(pagosMonto)}</span>
+        </div>
+      </label>`;
+  }).join('');
+  wrap.innerHTML = header + rows;
+}
+function updateResumenCVInfo(){
+  const infoEl = document.getElementById('resumenFiltroInfoCv');
+  const shareImgBtn = document.getElementById('resumenShareImageBtnCv');
+  if(!infoEl && !shareImgBtn) return;
+  const filteredDates = getResumenFilteredDatesCV();
+  const isFiltrado = !!(resumenRangeStartCv || resumenRangeEndCv || resumenExcludedDaysCv.size);
+  if(infoEl){
+    if(!isFiltrado){
+      infoEl.textContent = filteredDates.length
+        ? `Mostrando todos tus días con actividad (${filteredDates.length}).`
+        : 'Aún no tienes días con actividad registrada.';
+    }else{
+      let rango = '';
+      if(resumenRangeStartCv || resumenRangeEndCv){
+        rango = ` entre ${resumenRangeStartCv ? formatDateEs(resumenRangeStartCv) : 'el inicio'} y ${resumenRangeEndCv ? formatDateEs(resumenRangeEndCv) : 'hoy'}`;
+      }
+      const excluidos = resumenExcludedDaysCv.size
+        ? ` (${resumenExcludedDaysCv.size} día${resumenExcludedDaysCv.size===1?'':'s'} desmarcado${resumenExcludedDaysCv.size===1?'':'s'})`
+        : '';
+      infoEl.textContent = `Mostrando ${filteredDates.length} día${filteredDates.length===1?'':'s'}${rango}${excluidos}.`;
+    }
+  }
+  if(shareImgBtn) shareImgBtn.disabled = filteredDates.length===0;
+}
+/* Misma imagen que buildResumenShareImage, pero con los números PROPIOS de Caño Viejo: costo de
+   lo vendido (de sus propias ventas, según ventasLog) y pagos/compras de su propia columna. */
+async function buildResumenShareImageCV(){
+  const dates = getResumenFilteredDatesCV();
+  if(!dates.length) return;
+  const btn = document.getElementById('resumenShareImageBtnCv');
+  const textoOriginal = btn ? btn.textContent : '📤 Compartir imagen';
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
+  try{
+    const dias = dates.slice().sort().map(d=>{
+      const costo = (state.ventasLog||[])
+        .filter(e=> e.date===d && puntoDeVentaLog(e)==='canoViejo')
+        .reduce((s,e)=>s+ventaEntryCosto(e),0);
+      const pagos = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0),0);
+      return {date:d, costo, pagos};
+    });
+    const comprasTotal = dates.reduce((s,d)=> s + (state.compras[d]||[]).reduce((s2,r)=>s2+Number(r.canoViejo||0),0), 0);
+    const costoTotal = dias.reduce((s,d)=>s+d.costo, 0);
+    const pagosTotal = dias.reduce((s,d)=>s+d.pagos, 0);
+    const saldo = costoTotal - pagosTotal - comprasTotal;
+
+    const width = 680;
+    const padX = 32;
+    const headerHeight = 110;
+    const colHeaderHeight = 26;
+    const rowHeight = 40;
+    const footerHeight = 4*30 + 30;
+    const height = Math.round(headerHeight + colHeaderHeight + dias.length*rowHeight + footerHeight);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#FBF3E2';
+    ctx.fillRect(0,0,width,height);
+
+    ctx.fillStyle = '#E2481B';
+    ctx.font = '700 26px "Work Sans", sans-serif';
+    ctx.fillText('Chuzomanía · Caño Viejo', padX, 40);
+    ctx.fillStyle = '#5A4636';
+    ctx.font = '600 14px "Work Sans", sans-serif';
+    ctx.fillText(`Costo de lo vendido y pagos — ${dias.length} día${dias.length===1?'':'s'}`, padX, 62);
+    ctx.font = '400 12.5px "Work Sans", sans-serif';
+    ctx.fillText(document.getElementById('resumenFiltroInfoCv').textContent, padX, 82);
+    ctx.strokeStyle = 'rgba(42,27,16,.18)';
+    ctx.beginPath(); ctx.moveTo(padX, headerHeight-14); ctx.lineTo(width-padX, headerHeight-14); ctx.stroke();
+
+    const col2 = width - padX - 190;
+    const col3 = width - padX;
+    ctx.fillStyle = '#8A7A66';
+    ctx.font = '700 11.5px "Work Sans", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('DÍA', padX, headerHeight + 14);
+    ctx.textAlign = 'right';
+    ctx.fillText('COSTO DE LO VENDIDO', col2, headerHeight + 14);
+    ctx.fillText('PAGOS', col3, headerHeight + 14);
+
+    let cursorY = headerHeight + colHeaderHeight;
+    dias.forEach((d, i)=>{
+      const etiqueta = formatDateEs(d.date);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = '600 14px "Work Sans", sans-serif';
+      ctx.fillText(etiqueta.charAt(0).toUpperCase()+etiqueta.slice(1), padX, cursorY + 24);
+      ctx.textAlign = 'right';
+      ctx.font = '700 14px "Work Sans", sans-serif';
+      ctx.fillStyle = '#946B3A';
+      ctx.fillText(fmt(d.costo), col2, cursorY + 24);
+      ctx.fillStyle = '#2E6F9E';
+      ctx.fillText(fmt(d.pagos), col3, cursorY + 24);
+      cursorY += rowHeight;
+      if(i < dias.length-1){
+        ctx.strokeStyle = 'rgba(42,27,16,.1)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY); ctx.lineTo(width-padX, cursorY); ctx.stroke();
+      }
+    });
+
+    ctx.strokeStyle = 'rgba(42,27,16,.25)';
+    ctx.beginPath(); ctx.moveTo(padX, cursorY+8); ctx.lineTo(width-padX, cursorY+8); ctx.stroke();
+    cursorY += 8;
+    const filas = [
+      ['Costo de lo vendido (total)', costoTotal, '#946B3A'],
+      ['Pagos totales', pagosTotal, '#2E6F9E'],
+      ['Compras totales', comprasTotal, '#5B8C3E'],
+      [saldo>=0 ? 'Saldo a favor' : 'Saldo pendiente (se debe)', saldo, saldo>=0 ? '#3F6B29' : '#B23A2E'],
+    ];
+    filas.forEach(([label, valor, color], i)=>{
+      cursorY += 30;
+      const esSaldo = i === filas.length-1;
+      if(esSaldo){
+        ctx.strokeStyle = 'rgba(42,27,16,.25)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY-20); ctx.lineTo(width-padX, cursorY-20); ctx.stroke();
+      }
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#241811';
+      ctx.font = (esSaldo ? '700 16px' : '700 15px') + ' "Work Sans", sans-serif';
+      ctx.fillText(label, padX, cursorY);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = color;
+      ctx.font = (esSaldo ? '700 19px' : '700 17px') + ' "Work Sans", sans-serif';
+      ctx.fillText(fmt(valor), width - padX, cursorY);
+    });
+    ctx.textAlign = 'left';
+
+    await compartirODescargarImagen(canvas, `resumen-cano-viejo-${todayStr()}.png`, 'Resumen Chuzomanía · Caño Viejo', `Costo de lo vendido y pagos — ${dias.length} día${dias.length===1?'':'s'}`);
+  }catch(err){
+    alert('No se pudo generar la imagen para compartir. Intenta de nuevo.');
+  }finally{
+    if(btn){ btn.disabled = getResumenFilteredDatesCV().length===0; btn.textContent = textoOriginal; }
+  }
+}
+document.getElementById('resumenRangeStartCv').addEventListener('change', e=>{
+  resumenRangeStartCv = e.target.value || '';
+  updateResumenCVInfo();
+});
+document.getElementById('resumenRangeEndCv').addEventListener('change', e=>{
+  resumenRangeEndCv = e.target.value || '';
+  updateResumenCVInfo();
+});
+document.getElementById('resumenRangeClearBtnCv').addEventListener('click', ()=>{
+  resumenRangeStartCv = ''; resumenRangeEndCv = ''; resumenExcludedDaysCv.clear();
+  document.getElementById('resumenRangeStartCv').value = '';
+  document.getElementById('resumenRangeEndCv').value = '';
+  updateResumenCVInfo();
+});
+document.getElementById('resumenToggleDaysBtnCv').addEventListener('click', function(){
+  const wrap = document.getElementById('resumenDaysListCv');
+  const showing = wrap.style.display !== 'none';
+  if(showing){
+    wrap.style.display = 'none';
+    this.textContent = 'Elegir días sueltos ▾';
+  }else{
+    wrap.style.display = '';
+    this.textContent = 'Elegir días sueltos ▴';
+    renderResumenDaysListCV();
+  }
+});
+document.getElementById('resumenDaysListCv').addEventListener('change', e=>{
+  const day = e.target.dataset.day;
+  if(!day) return;
+  if(e.target.checked) resumenExcludedDaysCv.delete(day); else resumenExcludedDaysCv.add(day);
+  updateResumenCVInfo();
+});
+document.getElementById('resumenDaysListCv').addEventListener('click', e=>{
+  if(e.target.id==='resumenMarkAllBtnCv'){
+    resumenExcludedDaysCv.clear();
+    renderResumenDaysListCV();
+    updateResumenCVInfo();
+  }else if(e.target.id==='resumenUnmarkAllBtnCv'){
+    getResumenRangeDatesCV().forEach(d=>resumenExcludedDaysCv.add(d));
+    renderResumenDaysListCV();
+    updateResumenCVInfo();
+  }
+});
+document.getElementById('resumenShareImageBtnCv').addEventListener('click', buildResumenShareImageCV);
+
 function updateResumen(){
   const resumenDateInput = document.getElementById('resumenDate');
   if(resumenDateInput) resumenDateInput.value = currentResumenDate;
@@ -4364,6 +4629,12 @@ function updateResumen(){
   }
   const resumenDaysListEl = document.getElementById('resumenDaysList');
   if(resumenDaysListEl && resumenDaysListEl.style.display !== 'none') renderResumenDaysList();
+
+  if(esColaboradorCanoViejo()){
+    updateResumenCVInfo();
+    const resumenDaysListCvEl = document.getElementById('resumenDaysListCv');
+    if(resumenDaysListCvEl && resumenDaysListCvEl.style.display !== 'none') renderResumenDaysListCV();
+  }
 }
 
 function renderResumenMisVentasHoy(misEntradas){
