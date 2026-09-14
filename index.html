@@ -1135,12 +1135,14 @@
         <div class="card" id="r-ganancia-neta-hoy-card"><div class="lbl" id="lbl-ganancia-neta-hoy">Ganancia neta de hoy (ventas − pagos de hoy)</div><div class="val" id="r-ganancia-neta-hoy">$0</div></div>
       </div>
       <div class="subgrid">
+        <div class="miniblock"><div class="lbl">Ventas · Caño Viejo</div><div class="val" id="r-ventas-cv">$0</div></div>
+        <div class="miniblock"><div class="lbl">Ventas · Montería</div><div class="val" id="r-ventas-mo">$0</div></div>
         <div class="miniblock"><div class="lbl">Compras · Caño Viejo</div><div class="val" id="r-compras-cv">$0</div></div>
         <div class="miniblock"><div class="lbl">Compras · Montería</div><div class="val" id="r-compras-mo">$0</div></div>
         <div class="miniblock"><div class="lbl">Pagos · Caño Viejo</div><div class="val" id="r-pagos-cv">$0</div></div>
         <div class="miniblock"><div class="lbl">Pagos · Montería</div><div class="val" id="r-pagos-mo">$0</div></div>
       </div>
-      <p class="section-sub" style="margin-top:14px;">La ganancia estimada resta compras y pagos a la ganancia de ventas. La ganancia neta de hoy hace lo mismo, pero solo con lo compras y pagos que has hecho hoy — así queda descontado enseguida a quién le pagues.</p>
+      <p class="section-sub" style="margin-top:14px;">La ganancia estimada resta compras y pagos a la ganancia de ventas. La ganancia neta de hoy hace lo mismo, pero solo con lo compras y pagos que has hecho hoy — así queda descontado enseguida a quién le pagues. "Ventas · Caño Viejo" y "Ventas · Montería" solo cuentan lo vendido con el PIN de cada colaborador — lo que se registre con el PIN de Administrador no queda en ninguno de los dos.</p>
 
       <div class="sheet" style="margin-top:22px; padding:16px; background:var(--paper2); border-radius:14px;">
         <p class="section-sub" style="margin-top:0;">Seguridad · claves de acceso</p>
@@ -1497,6 +1499,17 @@ function esColaboradorCanoViejo(){
   const emp = (state.security.empleados||[]).find(e=>e.id===currentEmployeeId);
   const nombre = ((emp && emp.nombre) || currentEmployeeName || '').toLowerCase();
   return nombre.includes('caño viejo') || nombre.includes('cano viejo') || nombre.includes('cañoviejo');
+}
+// A qué punto (canoViejo/monteria) pertenece una venta ya registrada (state.ventasLog), según el
+// colaborador con cuyo PIN se hizo — null si se hizo con el PIN de Administrador (no se sabe en cuál
+// punto fue). Se usa para separar "Ventas · Caño Viejo" / "Ventas · Montería" en Resumen.
+function puntoDeVentaLog(entry){
+  if(!entry || !entry.empleadoId) return null;
+  const emp = (state.security.empleados||[]).find(e=>e.id===entry.empleadoId);
+  const nombre = ((emp && emp.nombre) || entry.vendedor || '').toLowerCase();
+  if(nombre.includes('caño viejo') || nombre.includes('cano viejo') || nombre.includes('cañoviejo')) return 'canoViejo';
+  if(nombre.includes('monter')) return 'monteria';
+  return null;
 }
 function productoVisibleParaSesion(row){
   if(currentRole==='admin') return true;
@@ -4099,6 +4112,14 @@ function updateResumen(){
   const ventasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
   const costoVentasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
   const gananciaVentas = allVentas.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
+  const filteredDatesSet = new Set(filteredDates);
+  let ventasCV = 0, ventasMO = 0;
+  (state.ventasLog||[]).forEach(e=>{
+    if(!filteredDatesSet.has(e.date)) return;
+    const punto = puntoDeVentaLog(e);
+    if(punto==='canoViejo') ventasCV += Number(e.total)||0;
+    else if(punto==='monteria') ventasMO += Number(e.total)||0;
+  });
   const allCompras = filteredDates.flatMap(d=> state.compras[d]||[]);
   const comprasCV = allCompras.reduce((s,r)=>s+Number(r.canoViejo||0),0);
   const comprasMO = allCompras.reduce((s,r)=>s+Number(r.monteria||0),0);
@@ -4153,6 +4174,10 @@ function updateResumen(){
   const shareImgBtn = document.getElementById('resumenShareImageBtn');
   if(shareImgBtn) shareImgBtn.disabled = filteredDates.length===0;
   document.getElementById('r-ganancia-card').className = 'card ' + (ganancia>=0 ? 'green':'red');
+  const rVentasCV = document.getElementById('r-ventas-cv');
+  if(rVentasCV) rVentasCV.textContent = fmt(ventasCV);
+  const rVentasMO = document.getElementById('r-ventas-mo');
+  if(rVentasMO) rVentasMO.textContent = fmt(ventasMO);
   document.getElementById('r-compras-cv').textContent = fmt(comprasCV);
   document.getElementById('r-compras-mo').textContent = fmt(comprasMO);
   document.getElementById('r-pagos-cv').textContent = fmt(pagosCV);
