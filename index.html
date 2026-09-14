@@ -3867,13 +3867,17 @@ async function buildResumenShareImage(){
     const comprasTotal = dates.reduce((s,d)=> s + (state.compras[d]||[]).reduce((s2,r)=>s2+Number(r.canoViejo||0)+Number(r.monteria||0),0), 0);
     const costoTotal = dias.reduce((s,d)=>s+d.costo, 0);
     const pagosTotal = dias.reduce((s,d)=>s+d.pagos, 0);
+    // Saldo: lo que queda del costo de lo vendido después de cubrir pagos y compras de esos días —
+    // si da negativo, es lo que falta por cubrir (lo tiene que aportar lo vendido en Caño Viejo);
+    // si da positivo, es lo que sobra.
+    const saldo = costoTotal - pagosTotal - comprasTotal;
 
     const width = 680;
     const padX = 32;
     const headerHeight = 110;
     const colHeaderHeight = 26;
     const rowHeight = 40;
-    const footerHeight = 3*30 + 30;
+    const footerHeight = 4*30 + 30;
     const height = Math.round(headerHeight + colHeaderHeight + dias.length*rowHeight + footerHeight);
 
     const canvas = document.createElement('canvas');
@@ -3932,16 +3936,22 @@ async function buildResumenShareImage(){
       ['Costo de lo vendido (total)', costoTotal, '#946B3A'],
       ['Pagos totales', pagosTotal, '#2E6F9E'],
       ['Compras totales', comprasTotal, '#5B8C3E'],
+      [saldo>=0 ? 'Saldo a favor' : 'Saldo pendiente (se debe)', saldo, saldo>=0 ? '#3F6B29' : '#B23A2E'],
     ];
-    filas.forEach(([label, valor, color])=>{
+    filas.forEach(([label, valor, color], i)=>{
       cursorY += 30;
+      const esSaldo = i === filas.length-1;
+      if(esSaldo){
+        ctx.strokeStyle = 'rgba(42,27,16,.25)';
+        ctx.beginPath(); ctx.moveTo(padX, cursorY-20); ctx.lineTo(width-padX, cursorY-20); ctx.stroke();
+      }
       ctx.textAlign = 'left';
       ctx.fillStyle = '#241811';
-      ctx.font = '700 15px "Work Sans", sans-serif';
+      ctx.font = (esSaldo ? '700 16px' : '700 15px') + ' "Work Sans", sans-serif';
       ctx.fillText(label, padX, cursorY);
       ctx.textAlign = 'right';
       ctx.fillStyle = color;
-      ctx.font = '700 17px "Work Sans", sans-serif';
+      ctx.font = (esSaldo ? '700 19px' : '700 17px') + ' "Work Sans", sans-serif';
       ctx.fillText(fmt(valor), width - padX, cursorY);
     });
     ctx.textAlign = 'left';
