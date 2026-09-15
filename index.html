@@ -3734,10 +3734,13 @@ document.getElementById('pagosQuickList').addEventListener('click', e=>{
    (puntoDeVentaLog). Lo que se venda con el PIN de Administrador no cuenta en ningún punto —
    antes casi todas las ventas quedaban así, pero desde que cada colaborador entra con su propio
    PIN esto ya refleja bien lo vendido en cada punto (ver puntoDeVentaLog). */
+// Costo de lo vendido (precio de costo, no público) en un punto y fecha — se usa como referencia
+// en Pagos, junto a lo que sí se pagó, para saber cuánto se debe/hay disponible según el costo
+// real de lo vendido (no según el precio al que se le cobró al cliente).
 function ventasEnPuntoYFecha(dateStr, punto){
   return (state.ventasLog||[])
     .filter(v=> v.date===dateStr && puntoDeVentaLog(v)===punto)
-    .reduce((s,v)=>s+Number(v.total||0),0);
+    .reduce((s,v)=>s+ventaEntryCosto(v),0);
 }
 function renderQuickPagos(){
   const punto = state.uiPrefs.pagosPunto;
@@ -3753,7 +3756,7 @@ function renderQuickPagos(){
 
   const sufijoFecha = currentPagosDate===todayStr() ? 'hoy' : formatDateEs(currentPagosDate);
   const ventasRef = ventasEnPuntoYFecha(currentPagosDate, punto);
-  document.getElementById('pagosVentasRefLabel').textContent = 'Vendido ' + sufijoFecha + ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
+  document.getElementById('pagosVentasRefLabel').textContent = 'Costo de lo vendido ' + sufijoFecha + ' · ' + (punto==='canoViejo' ? 'Caño Viejo' : 'Montería');
   document.getElementById('pagosVentasRefValue').textContent = fmt(ventasRef);
 
   const wrap = document.getElementById('pagosQuickList');
