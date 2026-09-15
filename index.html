@@ -1282,6 +1282,11 @@
      cargar la página. */
   const MODO_PRUEBA = new URLSearchParams(location.search).get('modo') === 'prueba';
   const DATA_KEY = MODO_PRUEBA ? 'chuzomania:data-prueba' : 'chuzomania:data';
+  // Clave HERMANA de DATA_KEY (nunca dentro de ella): DATA_KEY se guarda como un solo texto JSON
+  // gigante (un "valor" de Firebase, no una carpeta), así que no puede tener nada guardado
+  // "adentro" al mismo tiempo — por eso ventasLog/comprasLog/pagosLog/openTabs, que sí se guardan
+  // como registros individuales (ver más abajo), viven en esta clave aparte, no debajo de DATA_KEY.
+  const LOGS_KEY = DATA_KEY + '-logs';
 
   // Refleja el modo de prueba en la pantalla de inmediato — no depende de que termine loadState(),
   // para que el aviso y los links de entrar/salir aparezcan ya mismo aunque la conexión esté lenta
@@ -2067,6 +2072,7 @@ function applyStateSnapshot(json){
   if(!state.compras[currentComprasDate]) currentComprasDate = todayStr();
   if(!state.ventas[currentVentasDate]) currentVentasDate = todayStr();
   if(!state.pagos[currentPagosDate]) currentPagosDate = todayStr();
+  refreshKnownLogIds();
   renderVentas();
   renderCompras();
   renderPagos();
@@ -2110,6 +2116,115 @@ redoBtn.addEventListener('click', ()=>{
 });
 
 /* ---------- Storage ---------- */
+/* Protección contra guardados que se pisan entre sí: cada guardado reemplaza TODA la base de
+   datos con la copia que este aparato tiene en memoria — así que si dos celulares (p.ej. Caño
+   Viejo y Montería vendiendo al mismo tiempo) guardan casi al mismo tiempo, el que guarda de
+   último puede borrar sin querer una venta/compra/pago/cuenta guardada que el otro acababa de
+   registrar y que este aparato nunca llegó a ver. knownLogIds recuerda todos los ids de estas
+   4 listas (las que registran transacciones reales) que este aparato ha visto alguna vez —
+   incluyendo los que él mismo borró a propósito — para poder distinguir "esto es nuevo, lo
+   agregó otro aparato" de "esto lo borré yo, no hay que revivirlo". */
+const LOGS_A_PROTEGER = ['ventasLog','comprasLog','pagosLog','openTabs'];
+let knownLogIds = { ventasLog: new Set(), comprasLog: new Set(), pagosLog: new Set(), openTabs: new Set() };
+function refreshKnownLogIds(){
+  if(!state) return;
+  LOGS_A_PROTEGER.forEach(k=>{
+    (state[k]||[]).forEach(x=>{ if(x && x.id) knownLogIds[k].add(x.id); });
+  });
+}
+/* ---------- Guardado de ventasLog/comprasLog/pagosLog/openTabs por registro individual ----------
+   Estas 4 listas son las que registran transacciones reales (ventas, compras, pagos, cuentas
+   guardadas para después). En vez de vivir dentro del bloque gigante que se sobrescribe entero en
+   cada guardado (ver más abajo), cada registro se guarda por su cuenta en su propio "cajón":
+   chuzomania/<datos>/logs/<lista>/<id>. Así, dos aparatos guardando casi al mismo tiempo (p.ej.
+   Caño Viejo y Montería vendiendo a la vez) nunca pueden pisarse entre sí en estos datos — cada
+   registro es independiente de los demás. El resto de la información (catálogos y precios,
+   seguridad, insumos) sigue guardándose como siempre, en un solo bloque. */
+async function fetchLogsSubtree(){
+  try{
+    const token = await ensureFirebaseAuth();
+    const r = await fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(LOGS_KEY)}.json?auth=${encodeURIComponent(token)}`);
+    if(!r.ok) return null;
+    const val = await r.json();
+    return val || null;
+  }catch(e){ return null; }
+}
+async function putLogEntry(listName, entry){
+  try{
+    const token = await ensureFirebaseAuth();
+    await fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(LOGS_KEY)}/${listName}/${encodeURIComponent(entry.id)}.json?auth=${encodeURIComponent(token)}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(entry)
+    });
+  }catch(e){ /* si falla, se reintenta solo en el próximo guardado */ }
+}
+async function deleteLogEntry(listName, id){
+  try{
+    const token = await ensureFirebaseAuth();
+    await fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(LOGS_KEY)}/${listName}/${encodeURIComponent(id)}.json?auth=${encodeURIComponent(token)}`, { method:'DELETE' });
+  }catch(e){ /* si falla, se reintenta solo en el próximo guardado */ }
+}
+/* Trae del servidor los 4 catálogos de registros individuales y reemplaza las listas locales con
+   esa versión — es la fuente de verdad real. Si todavía no existe nada ahí (la primera vez que
+   se entra con este cambio activo), se migran una sola vez los registros que ya venían dentro
+   del bloque grande, para no perder el historial existente en la transición. */
+async function cargarYMigrarLogsIndividuales(){
+  const subtree = await fetchLogsSubtree();
+  if(subtree){
+    LOGS_A_PROTEGER.forEach(k=>{
+      const mapa = subtree[k];
+      state[k] = mapa ? Object.keys(mapa).map(id=>mapa[id]).filter(Boolean) : [];
+    });
+    return;
+  }
+  const tareas = [];
+  LOGS_A_PROTEGER.forEach(k=>{
+    (state[k]||[]).forEach(entry=>{ if(entry && entry.id) tareas.push(putLogEntry(k, entry)); });
+  });
+  try{ await Promise.all(tareas); }catch(e){ /* mejor esfuerzo: si algo falla, se reintenta en el próximo guardado normal */ }
+}
+/* Antes de guardar: rescata en la copia local cualquier registro que el servidor ya tenga y este
+   aparato nunca haya visto (p.ej. otro punto de venta guardando al mismo tiempo) — salvo que este
+   aparato ya lo conociera de antes y lo haya borrado a propósito (knownLogIds), en cuyo caso no se
+   revive. */
+function mergeMissingLogEntriesFromSubtree(serverLogsSubtree){
+  if(!serverLogsSubtree) return false;
+  let seRescatoAlgo = false;
+  LOGS_A_PROTEGER.forEach(k=>{
+    const serverMap = serverLogsSubtree[k];
+    if(!serverMap) return;
+    if(!Array.isArray(state[k])) state[k] = [];
+    const localIds = new Set(state[k].map(x=>x && x.id));
+    Object.keys(serverMap).forEach(id=>{
+      if(localIds.has(id) || (knownLogIds[k] && knownLogIds[k].has(id))) return;
+      const entry = serverMap[id];
+      if(!entry) return;
+      state[k].push(entry);
+      knownLogIds[k].add(id);
+      seRescatoAlgo = true;
+    });
+  });
+  return seRescatoAlgo;
+}
+/* Después de rescatar lo que hiciera falta: pone al día los "cajones" individuales del servidor
+   para que coincidan con la copia local — agrega los que sean nuevos aquí y todavía no existan
+   allá, y borra los que este aparato conocía y quitó a propósito (nunca borra uno que nunca
+   había visto: eso lo maneja el rescate de arriba, no esto). */
+async function reconciliarLogsSubtree(serverLogsSubtree){
+  const tareas = [];
+  LOGS_A_PROTEGER.forEach(k=>{
+    const serverMap = (serverLogsSubtree && serverLogsSubtree[k]) || {};
+    const serverIds = new Set(Object.keys(serverMap));
+    const local = Array.isArray(state[k]) ? state[k] : [];
+    const localIds = new Set(local.map(x=>x && x.id));
+    local.forEach(entry=>{
+      if(entry && entry.id && !serverIds.has(entry.id)) tareas.push(putLogEntry(k, entry));
+    });
+    serverIds.forEach(id=>{
+      if(!localIds.has(id) && knownLogIds[k] && knownLogIds[k].has(id)) tareas.push(deleteLogEntry(k, id));
+    });
+  });
+  try{ await Promise.all(tareas); }catch(e){ /* mejor esfuerzo: lo que falle se reintenta en el próximo guardado */ }
+}
 let saveTimer = null;
 let saveIsPending = false; // true entre "hubo un cambio por guardar" y "el guardado ya terminó (bien o mal)"
 function scheduleSave(tableName){
@@ -2119,9 +2234,32 @@ function scheduleSave(tableName){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     try{
+      // Antes de guardar, se revisa qué tiene el servidor en los registros individuales: primero
+      // se rescata lo que este aparato no conociera (otro punto de venta guardando al mismo
+      // tiempo), y luego se ponen al día esos registros individuales con la copia local ya
+      // corregida. Si esta comprobación falla (p.ej. sin conexión un instante), se sigue con el
+      // guardado normal del bloque grande en vez de bloquearlo del todo.
+      // Primero se marcan como "conocidos" los registros que ya están en la copia local en este
+      // momento (incluyendo cualquiera que se acabara de crear aquí mismo) — así, si más adelante
+      // se borra alguno de ellos, la reconciliación sabe que fue un borrado a propósito de este
+      // aparato y no algo que nunca llegó a ver.
+      refreshKnownLogIds();
+      let seRescatoAlgo = false;
+      try{
+        const serverLogsSubtree = await fetchLogsSubtree();
+        seRescatoAlgo = mergeMissingLogEntriesFromSubtree(serverLogsSubtree);
+        await reconciliarLogsSubtree(serverLogsSubtree);
+      }catch(e){ /* se ignora: mejor guardar el bloque grande con lo que hay que no guardar nada */ }
       const res = await dbStorage.set(DATA_KEY, JSON.stringify(state));
       saveIsPending = false;
       if(noteEl) noteEl.textContent = res ? 'Guardado ✓' : 'No se pudo guardar';
+      if(seRescatoAlgo && state && currentRole){
+        // Se recuperó algo que otro aparato había guardado — se refleja de inmediato en pantalla.
+        renderVentas();
+        renderCompras();
+        renderPagos();
+        updateResumen();
+      }
     }catch(e){
       saveIsPending = false;
       if(noteEl) noteEl.textContent = 'No se pudo guardar (revisa tu conexión)';
@@ -2134,7 +2272,10 @@ function scheduleSave(tableName){
    después" y salir), ese guardado pendiente nunca llega a completarse y el cambio se pierde en
    silencio. Esto lo detecta (en cuanto la página deja de estar visible) y fuerza ese guardado de
    inmediato, con keepalive para que la petición pueda terminar aunque la página ya se esté
-   cerrando. */
+   cerrando. Además de guardar el bloque grande como siempre, también reenvía ahora mismo cada
+   venta/compra/pago/cuenta guardada de esta copia local a su propio "cajón" — es la parte más
+   importante de rescatar justo en este momento (perder una venta nueva es mucho peor que tardar
+   un momento más en reflejar un borrado), así que no se espera a la comprobación normal. */
 function flushPendingSave(){
   if(!saveIsPending) return;
   clearTimeout(saveTimer);
@@ -2147,6 +2288,14 @@ function flushPendingSave(){
       // texto sea un JSON válido como cuerpo de la petición) — igual que hace dbStorage.set por dentro.
       fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(DATA_KEY)}.json?auth=${encodeURIComponent(token)}`, {
         method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(JSON.stringify(state)), keepalive:true
+      });
+      LOGS_A_PROTEGER.forEach(k=>{
+        (state[k]||[]).forEach(entry=>{
+          if(!entry || !entry.id) return;
+          fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(LOGS_KEY)}/${k}/${encodeURIComponent(entry.id)}.json?auth=${encodeURIComponent(token)}`, {
+            method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(entry), keepalive:true
+          });
+        });
       });
     }catch(e){ /* mejor esfuerzo: si falla aquí ya no hay forma de reintentar, la página se está cerrando */ }
   }).catch(()=>{});
@@ -2262,7 +2411,11 @@ async function loadState(){
       }
       ensureUiPrefs();
   ensureSecurity();
+      // Trae (o, la primera vez, migra) ventasLog/comprasLog/pagosLog/openTabs desde sus propios
+      // "cajones" individuales en Firebase — ver la nota junto a fetchLogsSubtree más abajo.
+      try{ await cargarYMigrarLogsIndividuales(); }catch(e){ /* mejor esfuerzo: se sigue con lo que ya traía el bloque grande */ }
       recomputeUidCounter();
+      refreshKnownLogIds();
       if(migrandoDesdeClaude){
         // se guarda de una vez en Firebase, para que de ahí en adelante todos los aparatos
         // (computador, iPhone, Android) vean siempre la misma información
@@ -2862,7 +3015,8 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   const total = items.reduce((s,i)=>s+i.cantidad*i.precioPublico,0);
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
   state.ventasLog.push({id:'r'+(uidCounter++), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId});
-  if(state.ventasLog.length > 400) state.ventasLog.splice(0, state.ventasLog.length-400);
+  // (ya no se recorta a los últimos 400: cada venta se guarda por su cuenta, así que se puede
+  // conservar todo el historial sin que la base de datos crezca de forma problemática)
   resetDraftOrder();
   renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
   renderDraftOrder();
@@ -3547,7 +3701,7 @@ document.getElementById('pagosQuickAddBtn').addEventListener('click', ()=>{
   row[punto] = valor;
   list.push(row);
   state.pagosLog.push({id:'r'+(uidCounter++), rowId:row.id, date:currentPagosDate, punto, pago, valor, ts:Date.now()});
-  if(state.pagosLog.length>400) state.pagosLog.splice(0, state.pagosLog.length-400);
+  // (ya no se recorta a los últimos 400: cada pago se guarda por su cuenta, se conserva todo el historial)
   nameInput.value = ''; valorInput.value = '';
   hidePagosAutocomplete();
   renderPagos();
@@ -3841,7 +3995,7 @@ document.getElementById('quickAddBtn').addEventListener('click', ()=>{
   row[punto] = valor;
   list.push(row);
   state.comprasLog.push({id:'r'+(uidCounter++), rowId:row.id, date:currentComprasDate, punto, producto, valor, ts:Date.now()});
-  if(state.comprasLog.length>400) state.comprasLog.splice(0, state.comprasLog.length-400);
+  // (ya no se recorta a los últimos 400: cada compra se guarda por su cuenta, se conserva todo el historial)
   nameInput.value = ''; precioInput.value = '';
   hideAutocomplete();
   renderCompras();
