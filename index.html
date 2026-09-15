@@ -581,6 +581,22 @@
   .login-card--loading .login-pin-label,
   .login-card--loading #loginPin,
   .login-card--loading #loginBtn{display:none;}
+  .login-card--loading .modo-prueba-link{display:none;}
+  .modo-prueba-link a{color:inherit; text-decoration:underline;}
+  /* Franja fija arriba de toda la app mientras se está en modo de prueba — para que sea imposible
+     confundir estos datos de prueba con los reales del negocio, se vea la pantalla que se vea. */
+  .modo-prueba-banner{
+    position:fixed; top:0; left:0; right:0; z-index:200;
+    background:#B23A2E; color:#fff; font-family:'Work Sans',sans-serif; font-weight:700; font-size:12.5px;
+    text-align:center; padding:7px 10px calc(7px + env(safe-area-inset-top)) 10px;
+    display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap;
+  }
+  .modo-prueba-banner a{color:#fff; text-decoration:underline; font-weight:700;}
+  .modo-prueba-banner button{
+    background:rgba(255,255,255,.18); color:#fff; border:1px solid rgba(255,255,255,.5);
+    border-radius:6px; padding:3px 9px; font-family:'Work Sans',sans-serif; font-weight:700; font-size:11.5px; cursor:pointer;
+  }
+  body.modo-prueba .wrap{margin-top:34px;}
 
   .accesos-card{background:var(--paper2); border-radius:12px; padding:14px; margin-top:18px;}
   .accesos-card h3{font-family:'Anton',sans-serif; font-weight:400; font-size:15px; color:var(--ink); margin:0 0 10px;}
@@ -645,7 +661,18 @@
     <input type="password" id="loginPin" inputmode="numeric" autocomplete="off" placeholder="••••" maxlength="8">
     <button class="btn" id="loginBtn" type="button">Entrar</button>
     <div class="login-error" id="loginError"></div>
+    <p class="modo-prueba-link" id="modoPruebaEntrar" style="margin:14px 0 0; font-size:12.5px; text-align:center;">
+      <a href="?modo=prueba" style="color:var(--ink-soft);">🧪 Entrar en modo de prueba (para probar cosas sin arriesgar tus datos reales)</a>
+    </p>
+    <p class="modo-prueba-link" id="modoPruebaSalir" style="display:none; margin:14px 0 0; font-size:12.5px; text-align:center;">
+      <a href="?" style="color:var(--ink-soft);">← Salir del modo de prueba y volver a tus datos reales</a>
+    </p>
   </div>
+</div>
+<div class="modo-prueba-banner" id="modoPruebaBanner" style="display:none;">
+  🧪 MODO DE PRUEBA — estos datos NO son los reales de tu negocio
+  <button type="button" id="modoPruebaRefreshBtn" data-admin-only="1" title="Reemplaza esta copia de prueba con una foto fresca de tus datos reales">🔄 Actualizar con datos reales</button>
+  <a href="?">Salir</a>
 </div>
 <div class="wrap">
   <header>
@@ -1247,6 +1274,26 @@
   const FIREBASE_API_KEY = "AIzaSyAINTDfNnSncsDjeKL6HU-Hv9f9bFWNB_I";
   function fbKeyToPath(key){ return String(key).replace(/:/g, '/'); }
 
+  /* ---------- Modo de prueba ----------
+     Para poder probar cosas (o dejar que alguien más pruebe) sin arriesgar los datos reales del
+     negocio: con ?modo=prueba en el link, la app entera sigue funcionando exactamente igual, pero
+     lee y guarda en una copia separada dentro de la misma base de datos (otra "carpeta" en
+     Firebase), que nunca se mezcla con los datos reales. MODO_PRUEBA se calcula una sola vez, al
+     cargar la página. */
+  const MODO_PRUEBA = new URLSearchParams(location.search).get('modo') === 'prueba';
+  const DATA_KEY = MODO_PRUEBA ? 'chuzomania:data-prueba' : 'chuzomania:data';
+
+  // Refleja el modo de prueba en la pantalla de inmediato — no depende de que termine loadState(),
+  // para que el aviso y los links de entrar/salir aparezcan ya mismo aunque la conexión esté lenta
+  // o falle del todo.
+  document.body.classList.toggle('modo-prueba', MODO_PRUEBA);
+  const modoPruebaBannerEl = document.getElementById('modoPruebaBanner');
+  if(modoPruebaBannerEl) modoPruebaBannerEl.style.display = MODO_PRUEBA ? '' : 'none';
+  const modoPruebaEntrarEl = document.getElementById('modoPruebaEntrar');
+  const modoPruebaSalirEl = document.getElementById('modoPruebaSalir');
+  if(modoPruebaEntrarEl) modoPruebaEntrarEl.style.display = MODO_PRUEBA ? 'none' : '';
+  if(modoPruebaSalirEl) modoPruebaSalirEl.style.display = MODO_PRUEBA ? '' : 'none';
+
   /* ---------- Sesión anónima de Firebase ----------
      La base de datos ya no acepta lecturas ni escrituras sin un usuario autenticado
      (ver reglas de seguridad en la consola de Firebase). Como esta app no le pide
@@ -1339,6 +1386,31 @@
       .then(token => fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(key)}.json?auth=${encodeURIComponent(token)}`, { method:'DELETE' }))
       .then(r=>{ if(!r.ok) throw new Error('error de red: '+r.status); return {key, deleted:true, shared:true}; })
   };
+
+  // "🔄 Actualizar con datos reales": solo tiene sentido (y solo se ve) dentro del modo de prueba —
+  // reemplaza la copia de prueba por una foto fresca de los datos reales del negocio, para volver
+  // a probar desde un punto de partida actualizado.
+  const modoPruebaRefreshBtnEl = document.getElementById('modoPruebaRefreshBtn');
+  if(modoPruebaRefreshBtnEl){
+    modoPruebaRefreshBtnEl.addEventListener('click', async ()=>{
+      if(!MODO_PRUEBA) return; // por seguridad: este botón nunca debe tocar los datos reales
+      const textoOriginal = modoPruebaRefreshBtnEl.textContent;
+      modoPruebaRefreshBtnEl.disabled = true;
+      modoPruebaRefreshBtnEl.textContent = 'Actualizando…';
+      try{
+        const prod = await dbStorage.get('chuzomania:data');
+        if(!prod || !prod.value){
+          throw new Error('Todavía no hay datos reales guardados para copiar.');
+        }
+        await dbStorage.set(DATA_KEY, prod.value);
+        location.reload();
+      }catch(e){
+        modoPruebaRefreshBtnEl.disabled = false;
+        modoPruebaRefreshBtnEl.textContent = textoOriginal;
+        alert('No se pudo actualizar la copia de prueba: ' + e.message);
+      }
+    });
+  }
 </script>
 <script>
 /* ---------- Datos iniciales (extraídos del Excel) ---------- */
@@ -1472,6 +1544,38 @@ let currentComprasDate = todayStr();
 let currentPagosDate = todayStr();
 let currentVentasDate = todayStr();
 let currentResumenDate = todayStr();
+
+/* ---------- Auto-avance de fecha a medianoche ----------
+   Las variables current*Date de arriba se fijan a "hoy" al cargar la página, al iniciar sesión o
+   al tocar "Hoy", pero si la app se queda abierta y cruza la medianoche, se quedaban apuntando al
+   día anterior: cualquier venta/compra/pago que se registrara pasada la medianoche quedaba
+   archivado bajo el día equivocado (esto ya causó dos casos reales de ventas "perdidas"). Este
+   chequeo detecta el cambio de día y adelanta SOLO las fechas que estaban en "hoy" — nunca una
+   fecha pasada a la que el usuario haya navegado a propósito — y refresca la pantalla si hace falta. */
+let lastKnownToday = todayStr();
+function checkMidnightRollover(){
+  const hoy = todayStr();
+  if(hoy === lastKnownToday) return;
+  const hoyAnterior = lastKnownToday;
+  lastKnownToday = hoy;
+  let cambioAlgunaFecha = false;
+  if(currentVentasDate === hoyAnterior){ currentVentasDate = hoy; cambioAlgunaFecha = true; }
+  if(currentComprasDate === hoyAnterior){ currentComprasDate = hoy; cambioAlgunaFecha = true; }
+  if(currentPagosDate === hoyAnterior){ currentPagosDate = hoy; cambioAlgunaFecha = true; }
+  if(currentResumenDate === hoyAnterior){ currentResumenDate = hoy; cambioAlgunaFecha = true; }
+  if(!cambioAlgunaFecha || !state || !currentRole) return;
+  // Mismo patrón de "refrescar todo" que ya se usa tras restaurar un snapshot de deshacer/rehacer.
+  renderVentas();
+  renderCompras();
+  renderPagos();
+  updateResumen();
+}
+// Cada minuto (por si la app se queda abierta toda la noche) y también apenas la pestaña/pantalla
+// vuelve a quedar visible (el caso típico: el celular se bloqueó pasada la medianoche y se
+// desbloquea ya en el nuevo día — los timers en segundo plano no son confiables en ese caso).
+setInterval(checkMidnightRollover, 60000);
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') checkMidnightRollover(); });
+
 // Filtro de "Ventas totales" (y compras/pagos/ganancia asociados) por días de venta:
 // por defecto no hay filtro (se suman todos los días con actividad, igual que antes).
 let resumenRangeStart = '';
@@ -2015,7 +2119,7 @@ function scheduleSave(tableName){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     try{
-      const res = await dbStorage.set('chuzomania:data', JSON.stringify(state));
+      const res = await dbStorage.set(DATA_KEY, JSON.stringify(state));
       saveIsPending = false;
       if(noteEl) noteEl.textContent = res ? 'Guardado ✓' : 'No se pudo guardar';
     }catch(e){
@@ -2037,11 +2141,11 @@ function flushPendingSave(){
   saveIsPending = false;
   ensureFirebaseAuth().then(token=>{
     try{
-      // Mismo formato que dbStorage.set('chuzomania:data', JSON.stringify(state)): el valor que
+      // Mismo formato que dbStorage.set(DATA_KEY, JSON.stringify(state)): el valor que
       // se guarda en Firebase es el texto JSON del estado, así que el cuerpo de esta petición debe
       // llevarlo codificado dos veces (una vez para convertir el estado a texto, otra para que ese
       // texto sea un JSON válido como cuerpo de la petición) — igual que hace dbStorage.set por dentro.
-      fetch(`${FIREBASE_DB_URL}/${fbKeyToPath('chuzomania:data')}.json?auth=${encodeURIComponent(token)}`, {
+      fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(DATA_KEY)}.json?auth=${encodeURIComponent(token)}`, {
         method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(JSON.stringify(state)), keepalive:true
       });
     }catch(e){ /* mejor esfuerzo: si falla aquí ya no hay forma de reintentar, la página se está cerrando */ }
@@ -2089,7 +2193,7 @@ async function loadState(){
   let res = null;
   let fetchFailed = false;
   try{
-    res = await dbStorage.get('chuzomania:data');
+    res = await dbStorage.get(DATA_KEY);
   }catch(e){
     // Puede ser una falla de red real, no que la base de datos esté vacía: no se debe
     // confundir con "todavía no hay datos", porque de lo contrario arrancaríamos con la
@@ -2102,7 +2206,10 @@ async function loadState(){
   // verdad no hay nada guardado todavía: solo en ese caso es seguro revisar el almacenamiento
   // antiguo de Claude o, si tampoco hay nada ahí, arrancar con la plantilla de ejemplo.
   if(res && res.value===null){
-    if(typeof window!=='undefined' && window.storage){
+    // La migración del almacenamiento antiguo de Claude solo tiene sentido para los datos reales
+    // del negocio — nunca para el modo de prueba, cuya copia vacía simplemente arranca con la
+    // plantilla de ejemplo hasta que se use "Actualizar copia de prueba con los datos reales".
+    if(!MODO_PRUEBA && typeof window!=='undefined' && window.storage){
       try{
         let viejo = await window.storage.get('chuzomania:data', true).catch(()=>null);
         if(!viejo || !viejo.value) viejo = await window.storage.get('chuzomania:data', false).catch(()=>null);
@@ -2159,7 +2266,7 @@ async function loadState(){
       if(migrandoDesdeClaude){
         // se guarda de una vez en Firebase, para que de ahí en adelante todos los aparatos
         // (computador, iPhone, Android) vean siempre la misma información
-        try{ await dbStorage.set('chuzomania:data', JSON.stringify(state)); }catch(e){}
+        try{ await dbStorage.set(DATA_KEY, JSON.stringify(state)); }catch(e){}
       }
       return;
     }
