@@ -3787,7 +3787,9 @@ function updatePagosFooter(){
 function renderPagosDateChips(){
   const wrap = document.getElementById('pagosDateChips');
   const dates = Object.keys(state.pagos)
-    .filter(d=> state.pagos[d].some(r=>r.canoViejo||r.monteria||r.pago))
+    // Solo días con algo realmente pagado (no basta con que el día ya tenga la lista de tipos de
+    // pago creada — eso pasa con solo abrir Pagos ese día, aunque no se haya pagado nada).
+    .filter(d=> state.pagos[d].some(r=>Number(r.canoViejo||0) || Number(r.monteria||0)))
     .sort((a,b)=> b.localeCompare(a))
     .slice(0,10);
   wrap.innerHTML = '';
@@ -4067,7 +4069,9 @@ function updateComprasFooter(){
 function renderComprasDateChips(){
   const wrap = document.getElementById('comprasDateChips');
   const dates = Object.keys(state.compras)
-    .filter(d=> state.compras[d].some(r=>r.canoViejo||r.monteria||r.producto))
+    // Solo días con algo realmente comprado (no basta con que el día ya tenga la lista de
+    // productos creada — eso pasa con solo abrir Compras ese día, aunque no se haya comprado nada).
+    .filter(d=> state.compras[d].some(r=>Number(r.canoViejo||0) || Number(r.monteria||0)))
     .sort((a,b)=> b.localeCompare(a))
     .slice(0,10);
   wrap.innerHTML = '';
