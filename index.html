@@ -220,15 +220,31 @@
   .insumos-name-input{
     flex:1; min-width:0; width:100%; box-sizing:border-box; font-family:'Work Sans',sans-serif;
     font-weight:700; font-size:12.5px; color:var(--ink); border:1.5px solid var(--line);
-    border-radius:8px; padding:8px 6px; background:#fff;
+    border-radius:999px; padding:7px 11px; background:#fff;
   }
   .insumos-card .del-btn{flex-shrink:0; padding:4px 6px;}
-  .insumos-card-prices{display:flex; flex-direction:column; gap:6px;}
-  .insumos-card-prices .prod-price-field .ppf-label{color:var(--c-insumos); opacity:.9;}
-  .insumos-card-prices .prod-price-field{display:flex; align-items:center; justify-content:space-between; gap:6px;}
-  .insumos-card-prices .prod-price-field .ppf-label{margin-bottom:0; flex-shrink:0;}
-  .insumos-card-prices .money-field{width:104px; flex-shrink:0;}
-  .insumos-card-prices .money-field input.money-input{width:100%; box-sizing:border-box; font-size:12.5px; padding:6px 6px 6px 15px !important;}
+  /* Precios de cada insumo: rótulo pequeño arriba y debajo una "píldora" redondeada que ocupa
+     todo el ancho de la tarjeta — así nada se sale del cuadro en pantallas de celular, y los tres
+     valores quedan alineados entre sí sin importar lo largo del rótulo. */
+  .insumos-card-prices{display:flex; flex-direction:column; gap:7px;}
+  .insumos-card-prices .prod-price-field{display:block; min-width:0;}
+  .insumos-card-prices .prod-price-field .ppf-label{
+    display:block; margin:0 0 3px 8px; font-size:9.5px; letter-spacing:.4px;
+    color:var(--c-insumos); opacity:.95; white-space:nowrap;
+  }
+  .insumos-card-prices .money-field{width:100%; min-width:0;}
+  .insumos-card-prices .money-field .money-sign{left:11px; font-size:11px; font-weight:700; color:var(--c-insumos);}
+  .insumos-card-prices .money-field input.money-input{
+    display:block; width:100%; min-width:0; height:30px; box-sizing:border-box;
+    font-family:'Work Sans',sans-serif; font-size:12.5px; font-weight:600; color:var(--ink);
+    text-align:right; font-variant-numeric:tabular-nums;
+    background:#fff; border:1.5px solid rgba(21,155,160,.32); border-radius:999px;
+    padding:4px 12px 4px 22px !important; outline:none;
+    transition:border-color .15s ease, box-shadow .15s ease;
+  }
+  .insumos-card-prices .money-field input.money-input:focus{
+    border-color:var(--c-insumos); box-shadow:0 0 0 3px rgba(21,155,160,.18);
+  }
   .insumos-empty{grid-column:1 / -1; text-align:center; color:var(--ink-soft); font-size:13px; padding:20px 0;}
 
   /* Editar productos y precios: en vez de tabla, tarjetas — así el nombre completo del
@@ -863,6 +879,9 @@
           <span>Costo de lo vendido</span>
           <b id="ft-costo-ventas-rapido">$0</b>
         </div>
+        <!-- Marca de versión: sirve para confirmar de un vistazo que el celular ya está usando la
+             versión en la que los totales se suman desde las ventas registradas. -->
+        <p class="section-sub" style="margin:4px 0 0;font-size:11px;opacity:.6;">Versión 5 oct 2026 · total = suma de las ventas registradas</p>
         <div id="ventaClientesResumen"></div>
         <div class="quick-list-head">
           <p class="section-sub" id="ventasHistorialLabel" style="margin:0;">Ventas registradas</p>
@@ -4346,8 +4365,9 @@ async function buildResumenShareImage(){
   if(btn){ btn.disabled = true; btn.textContent = 'Generando…'; }
   try{
     const dias = dates.slice().sort().map(d=>{
-      const costo = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.valorUnidad,0)
-        + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.valorUnidad,0) : 0);
+      // costo de lo vendido ese día, desde ventasLog (ver totalesVentasFecha): el catálogo podía
+      // traer un número distinto al de las ventas realmente registradas
+      const costo = totalesVentasFecha(d, false).costo;
       const pagos = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
       return {date:d, costo, pagos};
     });
@@ -4551,7 +4571,8 @@ function getResumenFilteredDates(){
 function renderResumenDaysList(){
   const wrap = document.getElementById('resumenDaysList');
   if(!wrap) return;
-  const dates = getResumenRangeDates();
+  // Lo más nuevo arriba: casi siempre se eligen los últimos días para compartir.
+  const dates = getResumenRangeDates().slice().reverse();
   if(!dates.length){
     wrap.innerHTML = '<div class="resumen-days-empty">No hay días con actividad en este rango.</div>';
     return;
@@ -4602,7 +4623,8 @@ function getResumenFilteredDatesCV(){
 function renderResumenDaysListCV(){
   const wrap = document.getElementById('resumenDaysListCv');
   if(!wrap) return;
-  const dates = getResumenRangeDatesCV();
+  // Lo más nuevo arriba: casi siempre se eligen los últimos días para compartir.
+  const dates = getResumenRangeDatesCV().slice().reverse();
   if(!dates.length){
     wrap.innerHTML = '<div class="resumen-days-empty">No hay días con actividad en este rango.</div>';
     return;
