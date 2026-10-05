@@ -318,6 +318,16 @@
   }
   .resumen-filtro .date-bar{margin-bottom:8px;}
   .resumen-filtro .date-field{background:#fff;}
+  /* Desde / Hasta: dos columnas iguales con el rótulo arriba de la fecha, y "Todo" en su propio
+     renglón — en una sola fila (como antes) no cabían en la pantalla del celular y el campo
+     "Hasta" y el botón se salían por la derecha. */
+  .resumen-filtro .date-bar{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px;}
+  .resumen-filtro .date-field{
+    flex-direction:column; align-items:stretch; gap:1px; min-width:0;
+    padding:6px 10px; border-radius:12px;
+  }
+  .resumen-filtro .date-field input[type="date"]{width:100%; min-width:0; font-size:13px;}
+  .resumen-filtro .date-bar .date-today{grid-column:1 / -1; justify-self:start; padding:6px 14px; font-size:12.5px;}
   .btn.ghost.small{padding:7px 11px; font-size:12.5px;}
   .resumen-days-list{
     display:flex; flex-direction:column; gap:6px; margin-top:10px;
