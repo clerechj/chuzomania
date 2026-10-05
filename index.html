@@ -2581,23 +2581,17 @@ function renderVentasCanoViejoTabla(){
   });
 }
 function updateVentasFooter(){
-  const list = ensureVentasDate(currentVentasDate);
-  // El administrador ve "todo el negocio", así que su total combina el catálogo compartido con el
-  // propio de Caño Viejo (cada colaborador, en cambio, se filtra más abajo por su propio PIN vía
-  // ventasLog, sin importar en qué catálogo haya quedado registrada la venta).
-  const listCV = ensureVentasCanoViejoDate(currentVentasDate);
-  const total = list.reduce((s,r)=>s+r.cantidad*r.precioPublico,0) + listCV.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoTotal = list.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0) + listCV.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
+  // El total del día sale de ventasLog (una suma de las ventas realmente registradas ese día), no
+  // de las cantidades del catálogo — ver la nota en totalesVentasFecha: el catálogo podía quedar
+  // corto si dos puntos vendían a la vez, y con él el total del día.
+  // El administrador ve "todo el negocio" (los dos puntos juntos); cada colaborador ve solo lo que
+  // él mismo vendió, sin importar en qué catálogo haya quedado registrada la venta.
+  const soloMias = currentRole==='empleado';
+  const {total, costo:costoTotal} = totalesVentasFecha(currentVentasDate, soloMias);
   const ftEl = document.getElementById('ft-ventas');
   if(ftEl) ftEl.textContent = fmt(total);
 
-  // en el registro rápido: el admin ve el total de todos; cada empleado ve solo lo que él mismo ha vendido hoy
-  let totalRapido = total, costoRapido = costoTotal;
-  if(currentRole==='empleado'){
-    const misEntradas = state.ventasLog.filter(e=> e.date===currentVentasDate && (e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName));
-    totalRapido = misEntradas.reduce((s,e)=> s + (Array.isArray(e.items) ? e.items.reduce((s2,i)=>s2+i.cantidad*i.precioPublico,0) : (e.cantidad||1)*e.valorUnidad), 0);
-    costoRapido = misEntradas.reduce((s,e)=> s + (Array.isArray(e.items) ? e.items.reduce((s2,i)=>s2+i.cantidad*(i.valorUnidad||0),0) : 0), 0);
-  }
+  const totalRapido = total, costoRapido = costoTotal;
   const rapidoEl = document.getElementById('ft-ventas-rapido');
   if(rapidoEl) rapidoEl.textContent = fmt(totalRapido);
   const costoRapidoEl = document.getElementById('ft-costo-ventas-rapido');
@@ -2617,29 +2611,14 @@ function renderVentasDateChips(){
   const wrap = document.getElementById('ventasDateChips');
   const isAdmin = currentRole==='admin';
   let dates, totalPorFecha;
-  if(isAdmin){
-    // el administrador sí ve el total del día completo (de todos los colaboradores juntos) —
-    // incluyendo tanto el catálogo compartido como el catálogo propio de Caño Viejo
-    const fechasCompartidas = Object.keys(state.ventas).filter(d=> state.ventas[d].some(r=>r.cantidad));
-    const fechasCV = Object.keys(state.ventasCanoViejo||{}).filter(d=> (state.ventasCanoViejo[d]||[]).some(r=>r.cantidad));
-    dates = Array.from(new Set([...fechasCompartidas, ...fechasCV]))
-      .sort((a,b)=> b.localeCompare(a))
-      .slice(0,10);
-    totalPorFecha = d => (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0)
-      + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.precioPublico,0) : 0);
-  }else{
-    // cada colaborador ve solo los días en que ÉL vendió, y el total de SUS propias ventas ese
-    // día — no el total del día completo, que podría incluir ventas de otros colaboradores y
-    // hacer parecer que los datos están mezclados
-    const misEntradas = state.ventasLog.filter(e=> e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName);
-    const porFecha = new Map();
-    misEntradas.forEach(e=>{
-      const total = Array.isArray(e.items) ? e.total : (e.cantidad||1)*e.valorUnidad;
-      porFecha.set(e.date, (porFecha.get(e.date)||0) + (Number(total)||0));
-    });
-    dates = Array.from(porFecha.keys()).sort((a,b)=> b.localeCompare(a)).slice(0,10);
-    totalPorFecha = d => porFecha.get(d) || 0;
-  }
+  // Los días y sus totales salen de ventasLog, igual que el total del día (ver totalesVentasFecha):
+  // así el chip de cada día muestra siempre lo mismo que la suma de "Ventas registradas" de ese día.
+  // El administrador ve los dos puntos juntos; cada colaborador, solo los días en que ÉL vendió y
+  // el total de SUS propias ventas ese día — no el del día completo, que incluiría ventas de otros
+  // y haría parecer que los datos están mezclados.
+  const porFecha = totalVendidoPorFecha(!isAdmin);
+  dates = Array.from(porFecha.keys()).sort((a,b)=> b.localeCompare(a)).slice(0,10);
+  totalPorFecha = d => porFecha.get(d) || 0;
   wrap.innerHTML = '';
   dates.forEach(d=>{
     const total = totalPorFecha(d);
@@ -3077,13 +3056,66 @@ function ventaEntryResumen(e){
 function ventaEntryNombre(e){
   return Array.isArray(e.items) ? (e.cliente || 'Venta rápida') : null;
 }
+/* ---------- Totales de venta por día, SIEMPRE desde ventasLog ----------
+   Por qué: las cantidades vendidas que se van sumando en el catálogo (state.ventas /
+   state.ventasCanoViejo) viven dentro del bloque gigante que se sobrescribe COMPLETO en cada
+   guardado. Si dos aparatos venden casi al mismo tiempo (Caño Viejo y Montería), el que guarda de
+   último reemplaza ese bloque con su propia copia y borra las cantidades que el otro acababa de
+   sumar: el total del día quedaba corto aunque las ventas sí estuvieran registradas una por una en
+   "Ventas registradas". Lo mismo pasaba si después se corregía un precio o se borraba un producto
+   del catálogo: el total de un día ya cerrado cambiaba hacia atrás.
+   ventasLog, en cambio, guarda cada venta en su propio cajón (nunca se pisa entre aparatos) y con
+   el precio y el costo que tenía EN EL MOMENTO de la venta — así que de ahí salen ahora todos los
+   totales por día. */
+function ventasLogDeFecha(dateStr, soloMias){
+  if(!state) return [];
+  return (state.ventasLog||[]).filter(e=>{
+    if(!e || e.date !== dateStr) return false;
+    if(!soloMias) return true;
+    return e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName;
+  });
+}
+// total = precio público cobrado; costo = precio de costo; ganancia = la diferencia.
+function totalesVentasFecha(dateStr, soloMias){
+  const entradas = ventasLogDeFecha(dateStr, soloMias);
+  const total = entradas.reduce((s,e)=> s + ventaEntryTotal(e), 0);
+  const costo = entradas.reduce((s,e)=> s + ventaEntryCosto(e), 0);
+  return {total, costo, ganancia: total - costo};
+}
+// Lo mismo, pero para varias fechas de una vez (Resumen con rango de días).
+function totalesVentasFechas(fechas, soloMias){
+  const set = new Set(fechas);
+  let total = 0, costo = 0;
+  if(!state) return {total, costo, ganancia:0};
+  (state.ventasLog||[]).forEach(e=>{
+    if(!e || !set.has(e.date)) return;
+    if(soloMias && !(e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName)) return;
+    total += ventaEntryTotal(e);
+    costo += ventaEntryCosto(e);
+  });
+  return {total, costo, ganancia: total - costo};
+}
+// Total vendido por fecha (todas las fechas con al menos una venta registrada), para los chips de
+// fecha y para saber qué días tuvieron actividad de venta.
+function totalVendidoPorFecha(soloMias){
+  const porFecha = new Map();
+  if(!state) return porFecha;
+  (state.ventasLog||[]).forEach(e=>{
+    if(!e || !e.date) return;
+    if(soloMias && !(e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName)) return;
+    porFecha.set(e.date, (porFecha.get(e.date)||0) + ventaEntryTotal(e));
+  });
+  return porFecha;
+}
 function renderVentaQuickList(){
   renderClientesResumen();
   const wrap = document.getElementById('ventaQuickList');
   const isAdmin = currentRole==='admin';
   let items = state.ventasLog.filter(e=>e.date===currentVentasDate);
   if(!isAdmin) items = items.filter(e=> e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName);
-  items = items.slice(-30).reverse();
+  // Se muestran TODAS las ventas del día (antes solo las últimas 30: en un día movido las
+  // primeras ventas desaparecían de la lista y no se podían ni revisar ni corregir).
+  items = items.slice().reverse();
   // las ventas visibles ahora mismo son las únicas que se pueden tener seleccionadas — si se
   // cambió de rol/filtro y una quedó fuera de la vista, se descarta de la selección
   const idsVisibles = new Set(items.map(e=>e.id));
@@ -4495,6 +4527,10 @@ document.getElementById('insumosSearch').addEventListener('input', e=>{
 // Todas las fechas (de ventas, compras o pagos) que tienen algo registrado.
 function getResumenActivityDates(){
   const set = new Set();
+  // Los días con venta se toman de ventasLog (el registro de cada venta): un día cuyas cantidades
+  // de catálogo se hubieran perdido seguía existiendo en ventasLog, pero desaparecía por completo
+  // de Resumen. Se siguen teniendo en cuenta los catálogos por si quedara algún día viejo ahí.
+  (state.ventasLog||[]).forEach(e=>{ if(e && e.date) set.add(e.date); });
   Object.keys(state.ventas||{}).forEach(d=>{ if((state.ventas[d]||[]).some(r=>r.cantidad)) set.add(d); });
   Object.keys(state.ventasCanoViejo||{}).forEach(d=>{ if((state.ventasCanoViejo[d]||[]).some(r=>r.cantidad)) set.add(d); });
   Object.keys(state.compras||{}).forEach(d=>{ if((state.compras[d]||[]).some(r=>Number(r.canoViejo||0) || Number(r.monteria||0))) set.add(d); });
@@ -4528,8 +4564,7 @@ function renderResumenDaysList(){
     // Se muestran las ventas, compras y pagos de ese día por separado (no solo las ventas) para
     // poder elegir días según cualquiera de los tres — por ejemplo, para ver en qué días se
     // compró más, aunque ese día no se haya vendido nada.
-    const ventasMonto = (state.ventas[d]||[]).reduce((s,r)=>s+r.cantidad*r.precioPublico,0)
-      + ((state.ventasCanoViejo && state.ventasCanoViejo[d]) ? state.ventasCanoViejo[d].reduce((s,r)=>s+r.cantidad*r.precioPublico,0) : 0);
+    const ventasMonto = totalesVentasFecha(d, false).total;
     const comprasMonto = (state.compras[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
     const pagosMonto = (state.pagos[d]||[]).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
     const checked = resumenExcludedDays.has(d) ? '' : 'checked';
@@ -4781,10 +4816,12 @@ function updateResumen(){
 
   const filteredDates = getResumenFilteredDates();
   const isFiltrado = !!(resumenRangeStart || resumenRangeEnd || resumenExcludedDays.size);
-  const allVentas = filteredDates.flatMap(d=> [...(state.ventas[d]||[]), ...((state.ventasCanoViejo&&state.ventasCanoViejo[d])||[])]);
-  const ventasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoVentasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
-  const gananciaVentas = allVentas.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
+  // Ventas, costo y ganancia de los días elegidos: desde ventasLog (ver totalesVentasFecha), con el
+  // precio y el costo que tenía cada producto en el momento de cada venta.
+  const totalesRango = totalesVentasFechas(filteredDates, false);
+  const ventasTotal = totalesRango.total;
+  const costoVentasTotal = totalesRango.costo;
+  const gananciaVentas = totalesRango.ganancia;
   const filteredDatesSet = new Set(filteredDates);
   let ventasCV = 0, ventasMO = 0;
   (state.ventasLog||[]).forEach(e=>{
@@ -4805,10 +4842,13 @@ function updateResumen(){
   // "de hoy" en realidad son "de la fecha elegida arriba en Resumen" (por defecto, hoy) — se
   // combina el catálogo compartido con el propio de Caño Viejo para que Resumen (que lo ve
   // Administrador) siempre refleje TODO el negocio, no solo Montería/Administrador.
-  const ventasHoyLista = [...ensureVentasDate(currentResumenDate), ...ensureVentasCanoViejoDate(currentResumenDate)];
-  const ventasHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoVentasHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
-  const gananciaHoy = ventasHoyLista.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
+  // (se siguen preparando los catálogos de esa fecha, como antes, aunque los totales ya no salgan de ahí)
+  ensureVentasDate(currentResumenDate);
+  ensureVentasCanoViejoDate(currentResumenDate);
+  const totalesDelDia = totalesVentasFecha(currentResumenDate, false);
+  const ventasHoy = totalesDelDia.total;
+  const costoVentasHoy = totalesDelDia.costo;
+  const gananciaHoy = totalesDelDia.ganancia;
   const comprasHoy = ensureComprasDate(currentResumenDate).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
   const pagosHoy = ensurePagosDate(currentResumenDate).reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
   const gananciaNetaHoy = gananciaHoy - comprasHoy - pagosHoy;
@@ -5257,10 +5297,12 @@ document.getElementById('testKeyBtn').addEventListener('click', async ()=>{
 });
 
 function buildContext(){
-  const allVentas = Object.values(state.ventas).flat();
-  const ventasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.precioPublico,0);
-  const costoVentasTotal = allVentas.reduce((s,r)=>s+r.cantidad*r.valorUnidad,0);
-  const gananciaVentas = allVentas.reduce((s,r)=>s+r.cantidad*r.ganancia,0);
+  // Totales de venta desde ventasLog, para que el asistente dé los mismos números que Resumen
+  // (ver la nota en totalesVentasFecha).
+  const totalesTodo = totalesVentasFechas(Array.from(new Set((state.ventasLog||[]).map(e=>e && e.date).filter(Boolean))), false);
+  const ventasTotal = totalesTodo.total;
+  const costoVentasTotal = totalesTodo.costo;
+  const gananciaVentas = totalesTodo.ganancia;
   const allCompras = Object.values(state.compras).flat();
   const comprasTotal = allCompras.reduce((s,r)=>s+Number(r.canoViejo||0)+Number(r.monteria||0),0);
   const allPagos = Object.values(state.pagos).flat();
