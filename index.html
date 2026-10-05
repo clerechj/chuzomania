@@ -2355,6 +2355,17 @@ function recomputeUidCounter(){
   })(state);
   if(max >= uidCounter) uidCounter = max + 1;
 }
+/* Id para un registro de ventasLog/openTabs/pagosLog/comprasLog. Cada uno se guarda en la nube
+   en su propio cajón, nombrado con su id. Con solo el contador, dos celulares que abrieron la app
+   con los mismos datos generaban LOS MISMOS ids (p. ej. los dos creaban "r501" para su siguiente
+   venta) y el que guardaba de último reemplazaba la venta del otro en la nube. La terminación al
+   azar (solo letras, para no alterar recomputeUidCounter) hace que eso ya no pueda pasar. */
+function nuevoIdRegistro(prefijo){
+  const letras = 'abcdefghijklmnopqrstuvwxyz';
+  let sufijo = '';
+  for(let i=0;i<6;i++) sufijo += letras[Math.floor(Math.random()*letras.length)];
+  return prefijo + (uidCounter++) + '_' + sufijo;
+}
 /* Muestra un aviso de carga en la pantalla de acceso (que siempre es lo primero que se ve),
    en vez de arrancar en silencio con datos de ejemplo cuando en realidad lo que pasó fue
    que no se pudo confirmar si ya había información guardada. */
@@ -2933,7 +2944,7 @@ document.getElementById('ventaParkBtn').addEventListener('click', ()=>{
   if(!draftOrder.length) return;
   const cliente = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
-  state.openTabs.push({id:'tab'+(uidCounter++), date:currentVentasDate, cliente, items: draftOrder.map(d=>({...d})), vendedor, empleadoId: currentEmployeeId});
+  state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente, items: draftOrder.map(d=>({...d})), vendedor, empleadoId: currentEmployeeId});
   resetDraftOrder();
   renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
   renderDraftOrder();
@@ -2956,7 +2967,7 @@ document.getElementById('ventaOpenTabs').addEventListener('click', e=>{
   if(draftOrder.length){
     const clienteActual = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
     const vendedorActual = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
-    state.openTabs.push({id:'tab'+(uidCounter++), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
+    state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
   }
   state.openTabs = state.openTabs.filter(t=>t.id!==tab.id);
   draftOrder = tab.items;
@@ -3022,7 +3033,7 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   });
   const total = items.reduce((s,i)=>s+i.cantidad*i.precioPublico,0);
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
-  state.ventasLog.push({id:'r'+(uidCounter++), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId});
+  state.ventasLog.push({id:nuevoIdRegistro('r'), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId});
   // (ya no se recorta a los últimos 400: cada venta se guarda por su cuenta, así que se puede
   // conservar todo el historial sin que la base de datos crezca de forma problemática)
   resetDraftOrder();
@@ -3207,7 +3218,7 @@ function startEditVenta(id){
   if(draftOrder.length){
     const clienteActual = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
     const vendedorActual = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
-    state.openTabs.push({id:'tab'+(uidCounter++), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
+    state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
   }
   draftOrder = Array.isArray(entry.items)
     ? entry.items.map(i=>({rowId:i.rowId, producto:i.producto, precioPublico:i.precioPublico, cantidad:i.cantidad}))
@@ -3761,7 +3772,7 @@ document.getElementById('pagosQuickAddBtn').addEventListener('click', ()=>{
   const row = {id:'r'+(uidCounter++), pago, canoViejo:0, monteria:0};
   row[punto] = valor;
   list.push(row);
-  state.pagosLog.push({id:'r'+(uidCounter++), rowId:row.id, date:currentPagosDate, punto, pago, valor, ts:Date.now()});
+  state.pagosLog.push({id:nuevoIdRegistro('r'), rowId:row.id, date:currentPagosDate, punto, pago, valor, ts:Date.now()});
   // (ya no se recorta a los últimos 400: cada pago se guarda por su cuenta, se conserva todo el historial)
   nameInput.value = ''; valorInput.value = '';
   hidePagosAutocomplete();
@@ -4060,7 +4071,7 @@ document.getElementById('quickAddBtn').addEventListener('click', ()=>{
   const row = {id:'r'+(uidCounter++), producto, canoViejo:0, monteria:0};
   row[punto] = valor;
   list.push(row);
-  state.comprasLog.push({id:'r'+(uidCounter++), rowId:row.id, date:currentComprasDate, punto, producto, valor, ts:Date.now()});
+  state.comprasLog.push({id:nuevoIdRegistro('r'), rowId:row.id, date:currentComprasDate, punto, producto, valor, ts:Date.now()});
   // (ya no se recorta a los últimos 400: cada compra se guarda por su cuenta, se conserva todo el historial)
   nameInput.value = ''; precioInput.value = '';
   hideAutocomplete();
