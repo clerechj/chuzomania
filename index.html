@@ -1651,6 +1651,24 @@ function quitarCuentaAbiertaDelPedido(){
   state.openTabs = state.openTabs.filter(t=>t.id!==draftDesdeTabId);
   draftDesdeTabId = null;
 }
+/* Antes de cambiar de fecha en Ventas: si había un pedido a medio armar, se guarda solo como
+   cuenta para después (en la fecha donde se estaba armando) en vez de borrarse sin aviso. Si el
+   pedido era una cuenta guardada que se abrió y no se le cambió nada, simplemente vuelve a la
+   lista tal cual. Si era la corrección de una venta ya registrada, se descarta la corrección y la
+   venta original queda intacta (como siempre). */
+function guardarPedidoAntesDeCambiarFecha(){
+  if(!draftOrder.length || editingVentaId) return false;
+  if(draftDesdeTabId){
+    const tab = state.openTabs.find(t=>t.id===draftDesdeTabId);
+    if(tab && iguales(tab.items, draftOrder)) return false;
+  }
+  const cliente = document.getElementById('ventaClienteInput').value.trim() || 'Pedido sin terminar';
+  const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
+  quitarCuentaAbiertaDelPedido();
+  state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente, items: draftOrder.map(d=>({...d})), vendedor, empleadoId: currentEmployeeId});
+  scheduleSave('ventas');
+  return true;
+}
 function resetDraftOrder(){
   draftOrder = [];
   editingVentaId = null;
@@ -2854,29 +2872,35 @@ function renderVentasDateChips(){
     const chip = document.createElement('button');
     chip.className = 'date-chip' + (d===currentVentasDate ? ' active' : '');
     chip.textContent = formatDateEs(d) + ' · ' + fmt(total);
-    chip.addEventListener('click', ()=>{ currentVentasDate = d; resetDraftOrder(); limpiarSeleccionVentas(); renderVentas(); });
+    chip.addEventListener('click', ()=>{ guardarPedidoAntesDeCambiarFecha(); currentVentasDate = d; resetDraftOrder(); limpiarSeleccionVentas(); renderVentas(); });
     wrap.appendChild(chip);
   });
 }
 document.getElementById('ventasDate').addEventListener('change', e=>{
+  guardarPedidoAntesDeCambiarFecha();
   currentVentasDate = e.target.value || todayStr();
   resetDraftOrder();
   limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasPrevDay').addEventListener('click', ()=>{
+  guardarPedidoAntesDeCambiarFecha();
   currentVentasDate = shiftDate(currentVentasDate, -1);
   resetDraftOrder();
   limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasNextDay').addEventListener('click', ()=>{
+  guardarPedidoAntesDeCambiarFecha();
   currentVentasDate = shiftDate(currentVentasDate, 1);
   resetDraftOrder();
   limpiarSeleccionVentas();
   renderVentas();
 });
 document.getElementById('ventasToday').addEventListener('click', ()=>{
+  // si ya se está en hoy, "Hoy" no hace nada (antes vaciaba el pedido en curso sin avisar)
+  if(currentVentasDate===todayStr()) return;
+  guardarPedidoAntesDeCambiarFecha();
   currentVentasDate = todayStr();
   resetDraftOrder();
   limpiarSeleccionVentas();
@@ -5409,6 +5433,11 @@ document.addEventListener('pointerup', e=>{
 /* Pagos (anclados a la fecha activa) */
 (function(){
   const tbody = document.querySelector('#tbl-pagos tbody');
+  tbody.addEventListener('change', e=>{
+    const tr = e.target.closest('tr'); if(!tr) return;
+    const row = ensurePagosDate(currentPagosDate).find(r=>r.id===tr.dataset.id);
+    if(row && actualizarRegistrosDeFila('pagosLog', row, 'pago')){ renderQuickPagos(); scheduleSave('pagos'); }
+  });
   tbody.addEventListener('input', e=>{
     const f = e.target.dataset.f; if(!f) return;
     const tr = e.target.closest('tr');
@@ -5428,15 +5457,43 @@ document.addEventListener('pointerup', e=>{
       snapshotForUndo();
       const tr = e.target.closest('tr');
       state.pagos[currentPagosDate] = ensurePagosDate(currentPagosDate).filter(r=>r.id!==tr.dataset.id);
+      quitarRegistrosDeFila('pagosLog', tr.dataset.id);
       renderPagos();
       scheduleSave('pagos');
     }
   });
 })();
 
+/* Cuando una compra o un pago se borra o se corrige directamente en la tabla, su registro en la
+   lista de abajo ("registros rápidos", comprasLog/pagosLog) se pone al día también — antes se
+   quedaba mostrando la compra borrada o el valor viejo. Para corregir se reemplaza el registro
+   por uno nuevo (con id nuevo), porque así es como cada registro suelto se guarda en la nube. */
+function quitarRegistrosDeFila(nombreLog, rowId){
+  if(!Array.isArray(state[nombreLog])) return;
+  state[nombreLog] = state[nombreLog].filter(e=> e.rowId!==rowId);
+}
+function actualizarRegistrosDeFila(nombreLog, row, campoNombre){
+  if(!Array.isArray(state[nombreLog])) return false;
+  let cambio = false;
+  state[nombreLog] = state[nombreLog].map(e=>{
+    if(e.rowId!==row.id) return e;
+    const valor = Number(row[e.punto]||0);
+    const nombre = row[campoNombre] || '';
+    if(valor===Number(e.valor||0) && nombre===(e[campoNombre]||'')) return e;
+    cambio = true;
+    return {...e, id:nuevoIdRegistro('r'), valor, [campoNombre]:nombre};
+  });
+  return cambio;
+}
+
 /* Compras (ancladas a la fecha activa) */
 (function(){
   const tbody = document.querySelector('#tbl-compras tbody');
+  tbody.addEventListener('change', e=>{
+    const tr = e.target.closest('tr'); if(!tr) return;
+    const row = ensureComprasDate(currentComprasDate).find(r=>r.id===tr.dataset.id);
+    if(row && actualizarRegistrosDeFila('comprasLog', row, 'producto')){ renderQuickCompras(); scheduleSave('compras'); }
+  });
   tbody.addEventListener('input', e=>{
     const f = e.target.dataset.f; if(!f) return;
     const tr = e.target.closest('tr');
@@ -5456,6 +5513,7 @@ document.addEventListener('pointerup', e=>{
       snapshotForUndo();
       const tr = e.target.closest('tr');
       state.compras[currentComprasDate] = ensureComprasDate(currentComprasDate).filter(r=>r.id!==tr.dataset.id);
+      quitarRegistrosDeFila('comprasLog', tr.dataset.id);
       renderCompras();
       scheduleSave('compras');
     }
