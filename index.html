@@ -1640,9 +1640,21 @@ function limpiarSeleccionVentas(){
 // "cuánto vendí ese día" por cada día marcado — independiente de la fecha que se esté viendo.
 let ventaDiasMode = false;
 let ventaDiasSeleccionados = new Set();
+/* Cuenta guardada que se abrió y está ahora en el pedido actual. Antes, al abrirla se borraba de
+   inmediato (también de la nube) y el pedido quedaba solo en la memoria del celular: si se cerraba
+   la app, se cambiaba de fecha o se recargaba la página antes de confirmar, la cuenta se perdía
+   entera. Ahora se queda guardada (solo se oculta de la lista) hasta que se confirma la venta, se
+   vuelve a guardar para después o se vacía a propósito. */
+let draftDesdeTabId = null;
+function quitarCuentaAbiertaDelPedido(){
+  if(!draftDesdeTabId) return;
+  state.openTabs = state.openTabs.filter(t=>t.id!==draftDesdeTabId);
+  draftDesdeTabId = null;
+}
 function resetDraftOrder(){
   draftOrder = [];
   editingVentaId = null;
+  draftDesdeTabId = null; // la cuenta abierta (si había) vuelve a verse en la lista, intacta
   const ci = document.getElementById('ventaClienteInput');
   if(ci) ci.value = '';
 }
@@ -2088,7 +2100,20 @@ function snapshotForUndo(){
   updateUndoButtonState();
 }
 function applyStateSnapshot(json){
+  const estadoAnterior = state;
   state = JSON.parse(json);
+  // Deshacer/rehacer devuelve TODO a como estaba, pero las ventas, compras, pagos y cuentas que
+  // llegaron de OTROS celulares después de esa copia no se tocan: antes se quitaban de aquí y, al
+  // guardar, se borraban también de la nube. Solo se revierte lo que se hizo en este celular.
+  if(estadoAnterior){
+    LOGS_A_PROTEGER.forEach(k=>{
+      if(!Array.isArray(state[k])) state[k] = [];
+      const enCopia = new Set(state[k].map(x=>x && x.id));
+      (estadoAnterior[k]||[]).forEach(x=>{
+        if(x && x.id && !enCopia.has(x.id) && !idsCreadosAqui.has(x.id)) state[k].push(x);
+      });
+    });
+  }
   for(const k in state){
     if(k==='compras' || k==='ventas' || k==='ventasCanoViejo'){
       for(const d in state[k]){ state[k][d].forEach(r=>{ if(!r.id) r.id='r'+(uidCounter++); }); }
@@ -2254,6 +2279,149 @@ async function reconciliarLogsSubtree(serverLogsSubtree){
   });
   try{ await Promise.all(tareas); }catch(e){ /* mejor esfuerzo: lo que falle se reintenta en el próximo guardado */ }
 }
+/* ---------- Fusión del bloque grande con lo que ya tiene el servidor ----------
+   El bloque grande (catálogos y precios, compras, pagos, insumos, colaboradores) se lee UNA sola
+   vez al abrir la app, y antes se guardaba COMPLETO tal como lo tenía este celular. Así, un
+   celular que llevaba horas abierto (p. ej. el de Caño Viejo vendiendo) borraba al guardar todo
+   lo que otro hubiera cambiado mientras tanto: un producto nuevo, un precio corregido, una compra
+   o un pago anotados desde el celular del administrador. Ahora, justo antes de guardar, se trae lo
+   que tiene el servidor y se combina "a tres bandas" con la última versión que este celular leyó
+   o guardó (baseServidor): de cada parte se queda con lo que cambió quien la cambió, y solo si
+   los dos cambiaron lo mismo gana este celular. Las cantidades vendidas del catálogo se suman en
+   vez de pisarse. Los registros individuales (ventasLog, etc.) no entran aquí: ya tienen su
+   propio mecanismo de guardado venta por venta. */
+let baseServidor = null; // texto JSON del bloque grande según la última lectura/guardado exitoso
+function iguales(a,b){ return JSON.stringify(a)===JSON.stringify(b); }
+function copiaJSON(x){ return x===undefined ? undefined : JSON.parse(JSON.stringify(x)); }
+function esListaConIds(x){ return Array.isArray(x) && x.length>0 && x.every(r=> r && typeof r==='object' && typeof r.id==='string'); }
+function fusionarFila(b, l, sv){
+  if(!b) return l;
+  const out = {};
+  new Set([...Object.keys(l), ...Object.keys(sv)]).forEach(k=>{
+    const vb = b[k], vl = l[k], vs = sv[k];
+    let v;
+    if(k==='cantidad' && (typeof vl==='number' || typeof vs==='number')){
+      // contador de unidades vendidas: se suman los aumentos de los dos lados
+      const nb = Number(vb)||0;
+      v = Math.max(0, nb + ((Number(vl)||0)-nb) + ((Number(vs)||0)-nb));
+    }else if(iguales(vl, vb)){
+      v = vs;
+    }else{
+      v = vl;
+    }
+    if(v!==undefined) out[k] = v;
+  });
+  return out;
+}
+function fusionarLista(b, l, sv){
+  const bm = new Map((b||[]).map(r=>[r.id, r]));
+  const sm = new Map((sv||[]).map(r=>[r.id, r]));
+  const lIds = new Set(l.map(r=>r.id));
+  const out = [];
+  l.forEach(r=>{
+    const rb = bm.get(r.id), rs = sm.get(r.id);
+    if(!rb){ out.push(r); return; }                 // nuevo en este celular
+    if(rs){ out.push(fusionarFila(rb, r, rs)); return; }
+    if(!iguales(r, rb)) out.push(r);                // el otro lo borró, pero aquí se editó: se conserva
+  });
+  (sv||[]).forEach(rs=>{
+    if(lIds.has(rs.id)) return;
+    if(!bm.has(rs.id)) out.push(rs);                // nuevo en el otro celular
+    // si estaba en la base y aquí ya no está, lo borró este celular a propósito: no se revive
+  });
+  return out;
+}
+/* Las dos partes crearon la MISMA fecha por su cuenta (p. ej. los dos celulares abrieron la hoja
+   de hoy desde la plantilla, cada uno con sus propios ids): se juntan por nombre de producto en
+   vez de duplicar toda la lista. Las filas que siguen vacías (recién salidas de la plantilla) se
+   descartan si el otro lado ya tiene ese producto; las unidades vendidas se suman. */
+function nombreFila(r){ return String(r.producto ?? r.pago ?? '').trim().toLowerCase(); }
+function filaVacia(r){ return !(Number(r.cantidad)||0) && !(Number(r.canoViejo)||0) && !(Number(r.monteria)||0); }
+function fusionarListasNuevas(l, sv){
+  const out = sv.map(r=>({...r}));
+  const ids = new Set(out.map(r=>r.id));
+  const porNombre = new Map();
+  out.forEach(r=>{ const n = nombreFila(r); if(n && !porNombre.has(n)) porNombre.set(n, r); });
+  l.forEach(r=>{
+    if(ids.has(r.id)) return;
+    const n = nombreFila(r);
+    const igual = n ? porNombre.get(n) : null;
+    if(igual && filaVacia(r)) return;
+    if(igual && ('cantidad' in r) && !('canoViejo' in r) && !('monteria' in r)){
+      igual.cantidad = (Number(igual.cantidad)||0) + (Number(r.cantidad)||0);
+      if(igual.stock==null && r.stock!=null) igual.stock = r.stock;
+      return;
+    }
+    out.push(r);
+  });
+  return out;
+}
+function fusionarValor(b, l, sv){
+  if(sv===undefined) return l;
+  if(iguales(l, b)) return sv;
+  if(iguales(sv, b)) return l;
+  // los dos lados cambiaron esta parte: se baja un nivel
+  if((esListaConIds(l)||Array.isArray(l)&&!l.length) && (esListaConIds(sv)||Array.isArray(sv)&&!sv.length) && (b===undefined || Array.isArray(b))){
+    if(b===undefined) return fusionarListasNuevas(l, sv);
+    return fusionarLista(b, l, sv);
+  }
+  if(l && sv && typeof l==='object' && typeof sv==='object' && !Array.isArray(l) && !Array.isArray(sv)){
+    const bo = (b && typeof b==='object' && !Array.isArray(b)) ? b : {};
+    const out = {};
+    new Set([...Object.keys(l), ...Object.keys(sv)]).forEach(k=>{
+      if(!(k in l)){
+        // no existe aquí: o es nuevo del otro lado (se toma), o este celular lo quitó (no se revive)
+        if(!(k in bo)) out[k] = sv[k];
+        return;
+      }
+      const v = fusionarValor(bo[k], l[k], sv[k]);
+      if(v!==undefined) out[k] = v;
+    });
+    return out;
+  }
+  return l;
+}
+// Devuelve el bloque combinado (sin tocar `local`). Las listas de registros individuales y las
+// preferencias de pantalla de este celular se quedan siempre como están aquí.
+function fusionarBloque(base, local, servidor){
+  const out = {};
+  new Set([...Object.keys(local), ...Object.keys(servidor)]).forEach(k=>{
+    if(LOGS_A_PROTEGER.includes(k) || k==='uiPrefs'){ if(k in local) out[k] = local[k]; return; }
+    if(!(k in local)){ if(!(k in base)) out[k] = servidor[k]; return; }
+    const v = fusionarValor(base[k], local[k], servidor[k]);
+    if(v!==undefined) out[k] = v;
+  });
+  return out;
+}
+// Lleva a una copia guardada para "deshacer" los cambios que llegaron de otros celulares, para que
+// deshacer revierta solo lo que se hizo aquí y nunca borre lo que otro guardó.
+function rebasarCopiaUndo(texto, baseAnterior, servidor){
+  try{
+    const copia = JSON.parse(texto);
+    return JSON.stringify(fusionarBloque(baseAnterior, copia, servidor));
+  }catch(e){ return texto; }
+}
+async function fusionarConServidorAntesDeGuardar(){
+  if(!baseServidor) return false;
+  const remoto = await dbStorage.get(DATA_KEY);
+  if(!remoto || !remoto.value) return false;
+  const servidor = JSON.parse(remoto.value);
+  const base = JSON.parse(baseServidor);
+  if(iguales(servidor, base)) return false; // nadie más guardó nada: no hay nada que combinar
+  // (de aquí en adelante todo es sincrónico: ninguna tecla que se escriba se puede perder en medio)
+  const fusion = fusionarBloque(base, state, servidor);
+  let trajoAlgo = false;
+  Object.keys(fusion).forEach(k=>{
+    if(!iguales(fusion[k], state[k])){ state[k] = fusion[k]; trajoAlgo = true; }
+  });
+  Object.keys(state).forEach(k=>{ if(!(k in fusion)) delete state[k]; });
+  if(trajoAlgo){
+    undoStack = undoStack.map(t=> rebasarCopiaUndo(t, base, servidor));
+    redoStack = redoStack.map(t=> rebasarCopiaUndo(t, base, servidor));
+    if(fieldEditSnapshot) fieldEditSnapshot = rebasarCopiaUndo(fieldEditSnapshot, base, servidor);
+  }
+  return trajoAlgo;
+}
 let saveTimer = null;
 let saveIsPending = false; // true entre "hubo un cambio por guardar" y "el guardado ya terminó (bien o mal)"
 function scheduleSave(tableName){
@@ -2279,14 +2447,21 @@ function scheduleSave(tableName){
         seRescatoAlgo = mergeMissingLogEntriesFromSubtree(serverLogsSubtree);
         await reconciliarLogsSubtree(serverLogsSubtree);
       }catch(e){ /* se ignora: mejor guardar el bloque grande con lo que hay que no guardar nada */ }
-      const res = await dbStorage.set(DATA_KEY, JSON.stringify(state));
+      let llegoDeOtroCelular = false;
+      try{ llegoDeOtroCelular = await fusionarConServidorAntesDeGuardar(); }
+      catch(e){ /* si no se pudo leer el servidor, se guarda como antes */ }
+      const textoGuardado = JSON.stringify(state);
+      const res = await dbStorage.set(DATA_KEY, textoGuardado);
+      if(res) baseServidor = textoGuardado;
       saveIsPending = false;
       if(noteEl) noteEl.textContent = res ? 'Guardado ✓' : 'No se pudo guardar';
-      if(seRescatoAlgo && state && currentRole){
+      const editandoAlgo = document.activeElement && document.activeElement.matches && document.activeElement.matches('input,select,textarea');
+      if((seRescatoAlgo || (llegoDeOtroCelular && !editandoAlgo)) && state && currentRole){
         // Se recuperó algo que otro aparato había guardado — se refleja de inmediato en pantalla.
         renderVentas();
         renderCompras();
         renderPagos();
+        if(llegoDeOtroCelular) renderInsumos();
         updateResumen();
       }
     }catch(e){
@@ -2311,13 +2486,20 @@ function flushPendingSave(){
   saveIsPending = false;
   ensureFirebaseAuth().then(token=>{
     try{
-      // Mismo formato que dbStorage.set(DATA_KEY, JSON.stringify(state)): el valor que
-      // se guarda en Firebase es el texto JSON del estado, así que el cuerpo de esta petición debe
-      // llevarlo codificado dos veces (una vez para convertir el estado a texto, otra para que ese
-      // texto sea un JSON válido como cuerpo de la petición) — igual que hace dbStorage.set por dentro.
-      fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(DATA_KEY)}.json?auth=${encodeURIComponent(token)}`, {
-        method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(JSON.stringify(state)), keepalive:true
-      });
+      // Primero el bloque grande, pero combinado con lo que ya tenga el servidor (ver
+      // fusionarConServidorAntesDeGuardar) para no borrar lo que otro celular guardó. Mismo formato
+      // que dbStorage.set(DATA_KEY, JSON.stringify(state)): el valor que se guarda en Firebase es
+      // el texto JSON del estado, así que el cuerpo de esta petición debe llevarlo codificado dos
+      // veces (una vez para convertir el estado a texto, otra para que ese texto sea un JSON válido
+      // como cuerpo de la petición) — igual que hace dbStorage.set por dentro.
+      fusionarConServidorAntesDeGuardar().catch(()=>false).then(()=>{
+        const textoGuardado = JSON.stringify(state);
+        return fetch(`${FIREBASE_DB_URL}/${fbKeyToPath(DATA_KEY)}.json?auth=${encodeURIComponent(token)}`, {
+          method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(textoGuardado), keepalive:true
+        }).then(r=>{ if(r && r.ok) baseServidor = textoGuardado; });
+      }).catch(()=>{});
+      // Las ventas/compras/pagos/cuentas sueltas se mandan YA, sin esperar nada: son lo más
+      // importante de no perder si la página se cierra.
       LOGS_A_PROTEGER.forEach(k=>{
         (state[k]||[]).forEach(entry=>{
           if(!entry || !entry.id) return;
@@ -2360,11 +2542,15 @@ function recomputeUidCounter(){
    con los mismos datos generaban LOS MISMOS ids (p. ej. los dos creaban "r501" para su siguiente
    venta) y el que guardaba de último reemplazaba la venta del otro en la nube. La terminación al
    azar (solo letras, para no alterar recomputeUidCounter) hace que eso ya no pueda pasar. */
+// ids de registros creados en ESTE celular durante esta sesión (ver applyStateSnapshot)
+const idsCreadosAqui = new Set();
 function nuevoIdRegistro(prefijo){
   const letras = 'abcdefghijklmnopqrstuvwxyz';
   let sufijo = '';
   for(let i=0;i<6;i++) sufijo += letras[Math.floor(Math.random()*letras.length)];
-  return prefijo + (uidCounter++) + '_' + sufijo;
+  const id = prefijo + (uidCounter++) + '_' + sufijo;
+  idsCreadosAqui.add(id);
+  return id;
 }
 /* Muestra un aviso de carga en la pantalla de acceso (que siempre es lo primero que se ve),
    en vez de arrancar en silencio con datos de ejemplo cuando en realidad lo que pasó fue
@@ -2456,6 +2642,9 @@ async function loadState(){
       try{ await cargarYMigrarLogsIndividuales(); }catch(e){ /* mejor esfuerzo: se sigue con lo que ya traía el bloque grande */ }
       recomputeUidCounter();
       refreshKnownLogIds();
+      // lo que el servidor tenía al abrir: punto de partida para combinar en cada guardado
+      // (si es una migración, el primer guardado de abajo la deja al día)
+      if(!migrandoDesdeClaude) baseServidor = res.value;
       if(migrandoDesdeClaude){
         // se guarda de una vez en Firebase, para que de ahí en adelante todos los aparatos
         // (computador, iPhone, Android) vean siempre la misma información
@@ -2919,7 +3108,11 @@ document.getElementById('ventaDraftList').addEventListener('click', e=>{
   renderDraftOrder();
 });
 document.getElementById('ventaClearBtn').addEventListener('click', ()=>{
+  const habiaCuenta = !!draftDesdeTabId;
+  quitarCuentaAbiertaDelPedido(); // "Vaciar" sí descarta a propósito la cuenta que se había abierto
   resetDraftOrder();
+  renderOpenTabs();
+  if(habiaCuenta) scheduleSave('ventas');
   renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
   renderDraftOrder();
 });
@@ -2928,7 +3121,7 @@ document.getElementById('ventaClearBtn').addEventListener('click', ()=>{
 function renderOpenTabs(){
   const wrap = document.getElementById('ventaOpenTabs');
   const isAdmin = currentRole==='admin';
-  let tabs = state.openTabs.filter(t=>t.date===currentVentasDate);
+  let tabs = state.openTabs.filter(t=>t.date===currentVentasDate && t.id!==draftDesdeTabId);
   if(!isAdmin) tabs = tabs.filter(t=> t.empleadoId===currentEmployeeId);
   wrap.innerHTML = tabs.map(t=>{
     const total = t.items.reduce((s,i)=>s+i.cantidad*i.precioPublico,0);
@@ -2944,6 +3137,7 @@ document.getElementById('ventaParkBtn').addEventListener('click', ()=>{
   if(!draftOrder.length) return;
   const cliente = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
+  quitarCuentaAbiertaDelPedido(); // la versión nueva reemplaza a la que se había abierto
   state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente, items: draftOrder.map(d=>({...d})), vendedor, empleadoId: currentEmployeeId});
   resetDraftOrder();
   renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
@@ -2967,10 +3161,12 @@ document.getElementById('ventaOpenTabs').addEventListener('click', e=>{
   if(draftOrder.length){
     const clienteActual = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
     const vendedorActual = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
+    quitarCuentaAbiertaDelPedido();
     state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
   }
-  state.openTabs = state.openTabs.filter(t=>t.id!==tab.id);
-  draftOrder = tab.items;
+  // la cuenta NO se borra todavía: solo se oculta mientras está en el pedido (ver draftDesdeTabId)
+  draftOrder = tab.items.map(i=>({...i}));
+  draftDesdeTabId = tab.id;
   editingVentaId = null; // abrir una cuenta guardada cancela cualquier edición de venta en curso
   document.getElementById('ventaClienteInput').value = tab.cliente;
   renderVentaQuickGrid(document.getElementById('ventaQuickSearch').value);
@@ -3021,8 +3217,16 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   const cliente = document.getElementById('ventaClienteInput').value.trim();
   const items = [];
   draftOrder.forEach(item=>{
-    const row = list.find(r=>r.id===item.rowId);
-    if(!row) return;
+    // Se busca la fila del producto por id y, si ya no está (otro celular reorganizó el catálogo de
+    // ese día mientras se armaba el pedido), por nombre. Si aun así no aparece, la venta de ese
+    // producto se registra igual con el precio que se veía en pantalla: antes se omitía en
+    // silencio y la venta quedaba más baja de lo cobrado.
+    const nombreItem = String(item.producto||'').trim().toLowerCase();
+    const row = list.find(r=>r.id===item.rowId) || (nombreItem ? list.find(r=> String(r.producto||'').trim().toLowerCase()===nombreItem) : null);
+    if(!row){
+      items.push({rowId:item.rowId, producto:item.producto, precioPublico:Number(item.precioPublico)||0, valorUnidad:Number(item.valorUnidad)||0, cantidad:item.cantidad});
+      return;
+    }
     row.cantidad = (Number(row.cantidad)||0) + item.cantidad;
     row.metodo = metodo;
     if(row.stock != null){
@@ -3034,6 +3238,7 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   const total = items.reduce((s,i)=>s+i.cantidad*i.precioPublico,0);
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
   state.ventasLog.push({id:nuevoIdRegistro('r'), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId});
+  quitarCuentaAbiertaDelPedido(); // si el pedido venía de una cuenta guardada, ya quedó cobrada
   // (ya no se recorta a los últimos 400: cada venta se guarda por su cuenta, así que se puede
   // conservar todo el historial sin que la base de datos crezca de forma problemática)
   resetDraftOrder();
@@ -3218,12 +3423,14 @@ function startEditVenta(id){
   if(draftOrder.length){
     const clienteActual = document.getElementById('ventaClienteInput').value.trim() || 'Cliente sin nombre';
     const vendedorActual = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
+    quitarCuentaAbiertaDelPedido();
     state.openTabs.push({id:nuevoIdRegistro('tab'), date:currentVentasDate, cliente:clienteActual, items: draftOrder.map(d=>({...d})), vendedor:vendedorActual, empleadoId: currentEmployeeId});
   }
   draftOrder = Array.isArray(entry.items)
     ? entry.items.map(i=>({rowId:i.rowId, producto:i.producto, precioPublico:i.precioPublico, cantidad:i.cantidad}))
     : [{rowId:entry.rowId, producto:entry.producto, precioPublico:entry.valorUnidad, cantidad:(entry.cantidad||1)}];
   editingVentaId = entry.id;
+  draftDesdeTabId = null;
   document.getElementById('ventaClienteInput').value = entry.cliente || '';
   state.uiPrefs.ventaMetodo = ['efectivo','nequi','rappi'].includes(entry.metodo) ? entry.metodo : 'efectivo';
   syncVentaMetodoToggle();
@@ -3592,7 +3799,9 @@ document.getElementById('ventaDiasShareImageBtn').addEventListener('click', buil
 let ventaClearDayArmed = false, ventaClearDayArmedTimer = null;
 document.getElementById('ventaClearDayBtn').addEventListener('click', function(){
   const list = ensureVentasDate(currentVentasDate);
-  const hayAlgo = list.some(r=>r.cantidad) || state.ventasLog.some(e=>e.date===currentVentasDate);
+  const hayAlgo = currentRole==='admin'
+    ? (list.some(r=>r.cantidad) || state.ventasLog.some(e=>e.date===currentVentasDate))
+    : state.ventasLog.some(e=> e.date===currentVentasDate && (e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName));
   if(!hayAlgo) return;
   if(!ventaClearDayArmed){
     ventaClearDayArmed = true;
@@ -3610,6 +3819,16 @@ document.getElementById('ventaClearDayBtn').addEventListener('click', function()
   this.textContent = '🧹 Limpiar';
   this.classList.remove('danger-armed');
   snapshotForUndo();
+  if(currentRole!=='admin'){
+    // Un colaborador solo ve SUS ventas en esta lista, así que "Limpiar" solo borra las suyas.
+    // Antes borraba las ventas de ese día de TODOS (los dos puntos), aunque no las estuviera viendo.
+    const mias = e=> e.date===currentVentasDate && (e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName);
+    state.ventasLog.filter(mias).forEach(e=> revertVentaEntryEffect(e));
+    state.ventasLog = state.ventasLog.filter(e=> !mias(e));
+    renderVentas();
+    scheduleSave('ventas');
+    return;
+  }
   list.forEach(r=>{ r.cantidad = 0; });
   // También se limpian las cantidades del catálogo propio de Caño Viejo para ese día — si no,
   // quedarían cantidades "vendidas" sin ninguna venta real detrás en el historial.
