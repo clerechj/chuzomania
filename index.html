@@ -409,6 +409,23 @@
   }
   .metodo-btn.active{background:var(--c-ventas); border-color:var(--c-ventas); color:#fff;}
   .metodo-icon{flex-shrink:0;}
+  .metodo-btn[data-metodo="fiado"].active{background:#C2410C; border-color:#C2410C;}
+  @media (max-width:420px){ .metodo-toggle{display:grid; grid-template-columns:1fr 1fr;} }
+  /* Fiados por cobrar */
+  .fiados-card{background:#FFF4E8; border:1.5px solid #F2B37A; border-radius:14px; padding:12px 14px; margin-bottom:14px;}
+  .fiados-card:empty{display:none;}
+  .fiados-head{display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:6px;}
+  .fiados-head .fh-title{font-weight:700; font-size:14px; color:#9A3412;}
+  .fiados-head .fh-total{font-weight:800; font-size:15px; color:#9A3412;}
+  .fiado-row{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid rgba(154,52,18,.15);}
+  .fiado-row .fr-info{flex:1; min-width:0;}
+  .fiado-row .fr-name{display:block; font-size:13.5px; font-weight:700; color:var(--ink);}
+  .fiado-row .fr-sub{display:block; font-size:11.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .fiado-row .fr-valor{font-weight:700; font-size:13.5px; color:var(--ink); white-space:nowrap;}
+  .fiado-btn{border:1.5px solid #C2410C; background:#fff; color:#C2410C; font-family:'Work Sans',sans-serif; font-weight:700; font-size:12px; padding:6px 10px; border-radius:8px; cursor:pointer; white-space:nowrap;}
+  .fiado-btn.primary{background:#C2410C; color:#fff;}
+  .fiado-pago{display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:0 0 8px;}
+  .fiado-pago span{font-size:12px; color:var(--ink-soft); width:100%;}
   .venta-search{
     width:100%; padding:12px 14px; border-radius:10px; border:1.5px solid var(--line); background:#fff;
     font-family:'Work Sans',sans-serif; font-size:14px; color:var(--ink); margin-bottom:12px;
@@ -849,6 +866,7 @@
         <div class="venta-grid" id="ventaQuickGrid"></div>
 
         <div class="open-tabs" id="ventaOpenTabs"></div>
+        <div class="fiados-card" id="ventaFiados"></div>
 
         <div class="draft-card">
           <p class="section-sub" id="ventaDraftHeading" style="margin:0 0 8px;">Pedido actual — toca varios productos si es una mesa o familia</p>
@@ -867,6 +885,10 @@
             <button class="metodo-btn" data-metodo="rappi" type="button">
               <svg class="metodo-icon" width="15" height="15" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="6" fill="#FF441F"/><text x="12" y="17" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#fff" text-anchor="middle">R</text></svg>
               Rappi
+            </button>
+            <button class="metodo-btn" data-metodo="fiado" type="button">
+              <svg class="metodo-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3z"/><path d="M8 9h7M8 13h5"/></svg>
+              Fiado
             </button>
           </div>
           <div class="draft-actions">
@@ -889,9 +911,13 @@
           <span>Costo de lo vendido</span>
           <b id="ft-costo-ventas-rapido">$0</b>
         </div>
+        <div class="quick-total" id="ventaFiadoDiaRow" style="display:none;">
+          <span>De eso, fiado sin pagar</span>
+          <b id="ft-fiado-dia">$0</b>
+        </div>
         <!-- Marca de versión: sirve para confirmar de un vistazo que el celular ya está usando la
              versión en la que los totales se suman desde las ventas registradas. -->
-        <p class="section-sub" style="margin:4px 0 0;font-size:11px;opacity:.6;">Versión 5 oct 2026 · total = suma de las ventas registradas</p>
+        <p class="section-sub" style="margin:4px 0 0;font-size:11px;opacity:.6;">Versión 30 oct 2026 · con fiados · total = suma de las ventas registradas</p>
         <div id="ventaClientesResumen"></div>
         <div class="quick-list-head">
           <p class="section-sub" id="ventasHistorialLabel" style="margin:0;">Ventas registradas</p>
@@ -2196,8 +2222,9 @@ redoBtn.addEventListener('click', ()=>{
    4 listas (las que registran transacciones reales) que este aparato ha visto alguna vez —
    incluyendo los que él mismo borró a propósito — para poder distinguir "esto es nuevo, lo
    agregó otro aparato" de "esto lo borré yo, no hay que revivirlo". */
-const LOGS_A_PROTEGER = ['ventasLog','comprasLog','pagosLog','openTabs'];
-let knownLogIds = { ventasLog: new Set(), comprasLog: new Set(), pagosLog: new Set(), openTabs: new Set() };
+// fiadosPagados: un registro por cada fiado que el cliente ya pagó (ver renderFiados).
+const LOGS_A_PROTEGER = ['ventasLog','comprasLog','pagosLog','openTabs','fiadosPagados'];
+let knownLogIds = { ventasLog: new Set(), comprasLog: new Set(), pagosLog: new Set(), openTabs: new Set(), fiadosPagados: new Set() };
 function refreshKnownLogIds(){
   if(!state) return;
   LOGS_A_PROTEGER.forEach(k=>{
@@ -2716,13 +2743,14 @@ function ensureUiPrefs(){
   if(!['rapido','tabla','historial'].includes(state.uiPrefs.ventasView)){
     state.uiPrefs.ventasView = 'rapido';
   }
-  if(!['efectivo','nequi','rappi'].includes(state.uiPrefs.ventaMetodo)){
+  if(!['efectivo','nequi','rappi','fiado'].includes(state.uiPrefs.ventaMetodo)){
     state.uiPrefs.ventaMetodo = 'efectivo';
   }
   if(!Array.isArray(state.comprasLog)) state.comprasLog = [];
   if(!Array.isArray(state.ventasLog)) state.ventasLog = [];
   if(!Array.isArray(state.pagosLog)) state.pagosLog = [];
   if(!Array.isArray(state.openTabs)) state.openTabs = [];
+  if(!Array.isArray(state.fiadosPagados)) state.fiadosPagados = [];
 }
 /* Claves de acceso (PIN) para administrador y empleados. Cada empleado tiene su propio nombre y PIN,
    para que sus ventas queden separadas de las de los demás. */
@@ -2843,6 +2871,14 @@ function updateVentasFooter(){
   if(rapidoEl) rapidoEl.textContent = fmt(totalRapido);
   const costoRapidoEl = document.getElementById('ft-costo-ventas-rapido');
   if(costoRapidoEl) costoRapidoEl.textContent = fmt(costoRapido);
+  const fiadoDia = ventasLogDeFecha(currentVentasDate, soloMias)
+    .filter(e=> e.metodo==='fiado' && !fiadoPagoDe(e.id))
+    .reduce((s,e)=> s + ventaEntryTotal(e), 0);
+  const fiadoRow = document.getElementById('ventaFiadoDiaRow');
+  if(fiadoRow){
+    fiadoRow.style.display = fiadoDia ? '' : 'none';
+    document.getElementById('ft-fiado-dia').textContent = fmt(fiadoDia);
+  }
   // Los rótulos de "Registro rápido" / "Ventas registradas" ya no dicen siempre "hoy": ahora que
   // se puede cambiar de fecha desde esta misma pantalla, dicen "hoy" solo cuando de verdad es hoy,
   // y si no, muestran la fecha elegida (el selector de arriba ya la deja bien visible también).
@@ -2945,7 +2981,13 @@ document.getElementById('ventaMetodoToggle').addEventListener('click', e=>{
   syncVentaMetodoToggle();
   scheduleSave('ventas');
 });
-function metodoLabel(m){ return m==='nequi' ? '🟣 Nequi' : m==='rappi' ? '🟠 Rappi' : '💵 Efectivo'; }
+function metodoLabel(m){ return m==='nequi' ? '🟣 Nequi' : m==='rappi' ? '🟠 Rappi' : m==='fiado' ? '📒 Fiado' : '💵 Efectivo'; }
+// Igual que metodoLabel, pero para una venta ya registrada: si fue fiada, dice si ya la pagaron.
+function metodoVentaLabel(e){
+  if(!e || e.metodo!=='fiado') return metodoLabel(e && e.metodo);
+  const pago = fiadoPagoDe(e.id);
+  return pago ? '📒 Fiado · pagó ' + formatDateEs(pago.fecha) + ' (' + metodoLabel(pago.metodo) + ')' : '📒 Fiado · debe';
+}
 function renderVentaQuickGrid(filter){
   const grid = document.getElementById('ventaQuickGrid');
   const list = catalogoEnUsoActual();
@@ -3141,8 +3183,71 @@ document.getElementById('ventaClearBtn').addEventListener('click', ()=>{
   renderDraftOrder();
 });
 
+/* ---------- Fiados por cobrar ----------
+   Una venta con método "fiado" cuenta como venta del día en que se hizo (el producto ya salió),
+   pero queda en esta lista hasta que el cliente pague. El pago NO modifica la venta: se guarda
+   como un registro aparte en fiadosPagados (con su propio "cajón" en la nube, igual que las
+   ventas), así dos celulares nunca se pisan al marcar pagos. Se muestran los fiados de todos los
+   días, no solo del día elegido. */
+let fiadoCobrandoId = null;
+function fiadoPagoDe(ventaId){
+  return (state && state.fiadosPagados || []).find(p=> p && p.ventaId===ventaId) || null;
+}
+function fiadosPendientes(){
+  const isAdmin = currentRole==='admin';
+  return (state.ventasLog||[]).filter(e=>{
+    if(!e || e.metodo!=='fiado' || fiadoPagoDe(e.id)) return false;
+    if(isAdmin) return true;
+    return e.empleadoId ? e.empleadoId===currentEmployeeId : e.vendedor===currentEmployeeName;
+  }).sort((a,b)=> (a.ts||0) - (b.ts||0));
+}
+function renderFiados(){
+  const wrap = document.getElementById('ventaFiados');
+  if(!wrap || !state) return;
+  const lista = fiadosPendientes();
+  if(!lista.length){ wrap.innerHTML = ''; fiadoCobrandoId = null; return; }
+  const isAdmin = currentRole==='admin';
+  const totalDeuda = lista.reduce((s,e)=> s + ventaEntryTotal(e), 0);
+  wrap.innerHTML = `<div class="fiados-head"><span class="fh-title">📒 Fiados por cobrar (${lista.length})</span><span class="fh-total">${fmt(totalDeuda)}</span></div>` +
+    lista.map(e=>{
+      const quien = isAdmin && e.vendedor ? ' · ' + escapeHtml(e.vendedor) : '';
+      const sub = formatDateEs(e.date) + quien + ' · ' + escapeHtml(ventaEntryResumen(e));
+      const fila = `<div class="fiado-row">
+          <div class="fr-info"><span class="fr-name">${escapeHtml(e.cliente||'Sin nombre')}</span><span class="fr-sub">${sub}</span></div>
+          <span class="fr-valor">${fmt(ventaEntryTotal(e))}</span>
+          ${fiadoCobrandoId===e.id ? '' : `<button type="button" class="fiado-btn" data-fiado-cobrar="${e.id}">Ya pagó</button>`}
+        </div>`;
+      if(fiadoCobrandoId!==e.id) return fila;
+      return fila + `<div class="fiado-pago">
+          <span>¿Cómo pagó ${escapeHtml(e.cliente||'')}?</span>
+          <button type="button" class="fiado-btn primary" data-fiado-pago="efectivo" data-venta="${e.id}">💵 Efectivo</button>
+          <button type="button" class="fiado-btn primary" data-fiado-pago="nequi" data-venta="${e.id}">🟣 Nequi</button>
+          <button type="button" class="fiado-btn" data-fiado-cancelar="1">Cancelar</button>
+        </div>`;
+    }).join('');
+}
+document.getElementById('ventaFiados').addEventListener('click', e=>{
+  const btn = e.target.closest('button');
+  if(!btn) return;
+  if(btn.dataset.fiadoCobrar){ fiadoCobrandoId = btn.dataset.fiadoCobrar; renderFiados(); return; }
+  if(btn.dataset.fiadoCancelar){ fiadoCobrandoId = null; renderFiados(); return; }
+  if(btn.dataset.fiadoPago){
+    const venta = state.ventasLog.find(x=>x.id===btn.dataset.venta);
+    if(!venta || fiadoPagoDe(venta.id)){ fiadoCobrandoId = null; renderFiados(); return; }
+    snapshotForUndo();
+    const cobradoPor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
+    state.fiadosPagados.push({id:nuevoIdRegistro('fp'), ventaId:venta.id, fecha:todayStr(), metodo:btn.dataset.fiadoPago, valor:ventaEntryTotal(venta), ts:Date.now(), cobradoPor, empleadoId: currentEmployeeId});
+    fiadoCobrandoId = null;
+    renderFiados();
+    renderVentaQuickList();
+    updateVentasFooter();
+    scheduleSave('ventas');
+  }
+});
+
 /* ---------- Cuentas abiertas (clientes/mesas que van a seguir pidiendo) ---------- */
 function renderOpenTabs(){
+  renderFiados();
   const wrap = document.getElementById('ventaOpenTabs');
   const isAdmin = currentRole==='admin';
   let tabs = state.openTabs.filter(t=>t.date===currentVentasDate && t.id!==draftDesdeTabId);
@@ -3219,6 +3324,12 @@ function revertVentaEntryEffect(entry){
 }
 document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   if(!draftOrder.length) return;
+  // Un fiado sin nombre no se podría cobrar después: se pide el nombre del cliente primero.
+  if(state.uiPrefs.ventaMetodo==='fiado' && !document.getElementById('ventaClienteInput').value.trim()){
+    alert('Para dejar el pedido fiado, escribe el nombre del cliente.');
+    document.getElementById('ventaClienteInput').focus();
+    return;
+  }
   snapshotForUndo();
   // Si esto es la corrección de una venta ya registrada, primero se revierte esa venta original
   // (como si se hubiera borrado) y se saca del historial — enseguida se registra la versión
@@ -3261,7 +3372,16 @@ document.getElementById('ventaConfirmBtn').addEventListener('click', ()=>{
   });
   const total = items.reduce((s,i)=>s+i.cantidad*i.precioPublico,0);
   const vendedor = currentRole==='admin' ? 'Administrador' : currentEmployeeName;
-  state.ventasLog.push({id:nuevoIdRegistro('r'), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId});
+  const nuevaVenta = {id:nuevoIdRegistro('r'), date:currentVentasDate, cliente, metodo, items, total, ts:Date.now(), vendedor, empleadoId: currentEmployeeId};
+  state.ventasLog.push(nuevaVenta);
+  // Si se corrigió un fiado que ya estaba pagado y sigue siendo fiado, el pago se pasa a la
+  // venta corregida (que tiene id nuevo) para que no vuelva a aparecer como deuda.
+  if(entradaOriginal && metodo==='fiado'){
+    const pagoAnterior = fiadoPagoDe(entradaOriginal.id);
+    if(pagoAnterior) state.fiadosPagados.push({...pagoAnterior, id:nuevoIdRegistro('fp'), ventaId:nuevaVenta.id, valor:total});
+  }
+  // El fiado no se queda marcado para la siguiente venta (casi todas se pagan de una vez).
+  if(metodo==='fiado'){ state.uiPrefs.ventaMetodo = 'efectivo'; syncVentaMetodoToggle(); }
   quitarCuentaAbiertaDelPedido(); // si el pedido venía de una cuenta guardada, ya quedó cobrada
   // (ya no se recorta a los últimos 400: cada venta se guarda por su cuenta, así que se puede
   // conservar todo el historial sin que la base de datos crezca de forma problemática)
@@ -3378,6 +3498,7 @@ function totalVendidoPorFecha(soloMias){
 }
 function renderVentaQuickList(){
   renderClientesResumen();
+  renderFiados();
   const wrap = document.getElementById('ventaQuickList');
   const isAdmin = currentRole==='admin';
   let items = state.ventasLog.filter(e=>e.date===currentVentasDate);
@@ -3402,8 +3523,8 @@ function renderVentaQuickList(){
     const nombreBruto = ventaEntryNombre(e);
     const nombreHtml = nombreBruto!=null ? escapeHtml(nombreBruto) : '';
     const detalle = nombreBruto!=null
-      ? `${nombreHtml}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien} · ${resumen}</span>`
-      : `${resumen}<span class="qi-time">${time} · ${metodoLabel(e.metodo)}${quien}</span>`;
+      ? `${nombreHtml}<span class="qi-time">${time} · ${metodoVentaLabel(e)}${quien} · ${resumen}</span>`
+      : `${resumen}<span class="qi-time">${time} · ${metodoVentaLabel(e)}${quien}</span>`;
     const checked = ventaSelectedIds.has(e.id) ? 'checked' : '';
     const checkboxHtml = ventaSelectMode
       ? `<input type="checkbox" class="qi-check" data-select-venta="${e.id}" ${checked} aria-label="Seleccionar esta venta">`
@@ -3456,7 +3577,7 @@ function startEditVenta(id){
   editingVentaId = entry.id;
   draftDesdeTabId = null;
   document.getElementById('ventaClienteInput').value = entry.cliente || '';
-  state.uiPrefs.ventaMetodo = ['efectivo','nequi','rappi'].includes(entry.metodo) ? entry.metodo : 'efectivo';
+  state.uiPrefs.ventaMetodo = ['efectivo','nequi','rappi','fiado'].includes(entry.metodo) ? entry.metodo : 'efectivo';
   syncVentaMetodoToggle();
   state.uiPrefs.ventasView = 'rapido';
   syncVentasViewToggle();
@@ -3562,8 +3683,8 @@ async function buildVentasShareImage(){
       const nombreBruto = ventaEntryNombre(e);
       const titulo = nombreBruto!=null ? nombreBruto : resumen;
       const subtitulo = nombreBruto!=null
-        ? `${time} · ${metodoLabel(e.metodo)}${quien} · ${resumen}`
-        : `${time} · ${metodoLabel(e.metodo)}${quien}`;
+        ? `${time} · ${metodoVentaLabel(e)}${quien} · ${resumen}`
+        : `${time} · ${metodoVentaLabel(e)}${quien}`;
       const subtituloLineas = wrapCanvasText(medidor, subtitulo, contentWidth);
       return {titulo, subtituloLineas, total};
     });
@@ -5253,7 +5374,7 @@ function renderResumenMisVentasHoy(misEntradas){
     }
     const nombre = e.cliente ? escapeHtml(e.cliente) : 'Venta rápida';
     return `<div class="quick-item">
-        <div class="qi-name">${nombre}<span class="qi-time">${time} · ${metodoLabel(e.metodo)} · ${escapeHtml(resumen)}</span></div>
+        <div class="qi-name">${nombre}<span class="qi-time">${time} · ${metodoVentaLabel(e)} · ${escapeHtml(resumen)}</span></div>
         <div class="qi-price">${fmt(total)}</div>
       </div>`;
   }).join('');
